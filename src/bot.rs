@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
+use chrono::{Datelike, TimeZone, Utc};
 use teloxide::prelude::*;
 use teloxide::types::ParseMode;
 use teloxide::utils::command::BotCommands;
 
 use crate::db::Db;
 use crate::parser;
+use crate::recurrence;
 
 #[derive(BotCommands, Clone)]
 #[command(
@@ -13,8 +15,12 @@ use crate::parser;
     description = "BonjourDijon — your chore tracker 🧹"
 )]
 pub enum Command {
+    #[command(description = "welcome message & quick start guide")]
+    Start,
     #[command(description = "show this help message")]
     Help,
+    #[command(description = "today's agenda: chores, events, reminders & urgent groceries")]
+    Today,
     #[command(description = "add a new chore: /chore do the dishes")]
     Chore(String),
     #[command(description = "list all chores")]
@@ -48,6 +54,9 @@ pub enum Command {
 }
 
 pub async fn run(bot: Bot, db: Arc<Db>) {
+    // Register bot profile & command menu in Telegram
+    setup_bot_profile(&bot).await;
+
     let handler = Update::filter_message().filter_command::<Command>().endpoint(
         move |bot: Bot, msg: Message, cmd: Command| {
             let db = db.clone();
@@ -65,6 +74,45 @@ pub async fn run(bot: Bot, db: Arc<Db>) {
         .await;
 }
 
+/// Register the bot's description, short description, and command menu
+/// in Telegram. Runs once at startup.
+async fn setup_bot_profile(bot: &Bot) {
+    use teloxide::payloads;
+    use teloxide::requests::JsonRequest;
+
+    // ── Bot description (shown on the bot's profile page, before /start) ──
+    let description = "🧹 BonjourDijon — your household assistant!\n\n\
+        I track chores, groceries, reminders, lists and calendar events \
+        for you and your housemates.\n\n\
+        Hit Start to see what I can do!";
+
+    let set_desc = payloads::SetMyDescription {
+        description: Some(description.to_string()),
+        language_code: None,
+    };
+    if let Err(e) = JsonRequest::new(bot.clone(), set_desc).send().await {
+        log::warn!("Failed to set bot description: {e}");
+    }
+
+    // ── Short description (shown in bot card in search / forwarded links) ──
+    let short_desc = "🧹 Household chore tracker, grocery list & calendar for housemates";
+
+    let set_short = payloads::SetMyShortDescription {
+        short_description: Some(short_desc.to_string()),
+        language_code: None,
+    };
+    if let Err(e) = JsonRequest::new(bot.clone(), set_short).send().await {
+        log::warn!("Failed to set bot short description: {e}");
+    }
+
+    // ── Command menu (the / autocomplete list in Telegram) ──
+    if let Err(e) = bot.set_my_commands(Command::bot_commands()).send().await {
+        log::warn!("Failed to set bot commands: {e}");
+    }
+
+    log::info!("Bot profile & command menu registered in Telegram");
+}
+
 async fn handle_command(
     bot: Bot,
     msg: Message,
@@ -79,8 +127,62 @@ async fn handle_command(
         .unwrap_or_else(|| "anonymous".into());
 
     match cmd {
+        Command::Start => {
+            let name = msg
+                .from
+                .as_ref()
+                .and_then(|u| u.first_name.as_str().into())
+                .unwrap_or("there");
+            let text = format!(
+                "👋 <b>Bonjour {name}!</b> Welcome to <b>BonjourDijon</b> 🧹\n\
+                 \n\
+                 I help you keep your home tidy, your groceries tracked,\n\
+                 and your life organised. Here's what I can do:\n\
+                 \n\
+                 🧹 <b>Chores</b>\n\
+                 /chore <i>title</i> — add a new chore\n\
+                 /chores — see all chores\n\
+                 /done <i>id</i> — mark a chore as done\n\
+                 /assign <i>id @user</i> — assign to someone\n\
+                 \n\
+                 ⏰ <b>Reminders</b>\n\
+                 /remind <i>in 2h do laundry</i>\n\
+                 /remind <i>every 1 week check stock</i>\n\
+                 /reminders — see active reminders\n\
+                 \n\
+                 🛒 <b>Groceries</b>\n\
+                 /buy <i>item @Store !priority</i>\n\
+                 /groceries — see the list\n\
+                 /bought <i>id</i> — mark as bought\n\
+                 \n\
+                 📝 <b>Lists</b>\n\
+                 /add <i>listname item</i> — add to any list\n\
+                 /list <i>listname</i> — view a list\n\
+                 /lists — see all lists\n\
+                 \n\
+                 📅 <b>Events</b>\n\
+                 /event <i>date title</i> — add an event\n\
+                 /events — see upcoming events\n\
+                 \n\
+                 ☀️ <b>Daily Digest</b>\n\
+                 /today — your daily agenda at a glance\n\
+                 \n\
+                 Type /help anytime for the full command reference. Let's go! 🚀",
+            );
+            bot.send_message(msg.chat.id, text)
+                .parse_mode(ParseMode::Html)
+                .await?;
+        }
+
         Command::Help => {
             bot.send_message(msg.chat.id, Command::descriptions().to_string())
+                .await?;
+        }
+
+        Command::Today => {
+            let text = build_daily_digest(&db, chat_id);
+            bot.send_message(msg.chat.id, text)
+                .parse_mode(ParseMode::Html)
                 .await?;
         }
 
@@ -615,6 +717,146 @@ async fn handle_command(
 }
 
 /// Format a duration in seconds into a human-readable string.
+fn build_daily_digest(db: &Db, chat_id: i64) -> String {
+    let now = Utc::now();
+    let today_start = Utc
+        .with_ymd_and_hms(now.year(), now.month(), now.day(), 0, 0, 0)
+        .unwrap();
+    let today_end = today_start + chrono::Duration::days(1);
+
+    let weekday = now.format("%A");
+    let date = now.format("%d %B %Y");
+    let mut text = format!("☀️ <b>Good morning! {weekday}, {date}</b>\n");
+
+    // ── Chores due today or overdue ─────────────────────────────────
+    let chores = db.list_chores(chat_id).unwrap_or_default();
+    let mut due_chores: Vec<_> = chores
+        .iter()
+        .filter(|c| !c.done)
+        .filter(|c| {
+            if let Some(due) = c.due_at {
+                due < today_end
+            } else {
+                // Recurring chores with no due_at: check if they'd fire today
+                if c.cron.is_some() || c.interval_secs.is_some() {
+                    !recurrence::expand_occurrences(
+                        c.due_at.unwrap_or(c.created_at),
+                        c.cron.as_deref(),
+                        c.interval_secs,
+                        today_start,
+                        today_end,
+                    )
+                    .is_empty()
+                } else {
+                    // One-off chore with no due date — always show it
+                    true
+                }
+            }
+        })
+        .collect();
+    due_chores.sort_by_key(|c| c.due_at);
+
+    text.push_str("\n🧹 <b>Chores</b>\n");
+    if due_chores.is_empty() {
+        text.push_str("  ✨ All clear — nothing due!\n");
+    } else {
+        let mut total_minutes: i64 = 0;
+        for c in &due_chores {
+            let overdue = c
+                .due_at
+                .filter(|d| *d < today_start)
+                .map(|_| " ⚠️ <i>overdue</i>")
+                .unwrap_or("");
+            let est = c
+                .estimate_minutes
+                .map(|m| {
+                    total_minutes += m;
+                    format!(" (~{m}min)")
+                })
+                .unwrap_or_default();
+            let owner = c
+                .owner
+                .as_deref()
+                .map(|o| format!(" → @{o}"))
+                .unwrap_or_default();
+            text.push_str(&format!(
+                "  ⬜ <b>#{}</b> {}{est}{owner}{overdue}\n",
+                c.id, c.title
+            ));
+        }
+        if total_minutes > 0 {
+            let h = total_minutes / 60;
+            let m = total_minutes % 60;
+            let time_str = if h > 0 {
+                format!("{h}h{m:02}")
+            } else {
+                format!("{m}min")
+            };
+            text.push_str(&format!(
+                "  ⏱ ~{time_str} total for {} chore{}\n",
+                due_chores.len(),
+                if due_chores.len() == 1 { "" } else { "s" }
+            ));
+        }
+    }
+
+    // ── Events today ────────────────────────────────────────────────
+    let events = db.list_events_in_range(today_start, today_end).unwrap_or_default();
+    text.push_str("\n📅 <b>Events</b>\n");
+    if events.is_empty() {
+        text.push_str("  No events today.\n");
+    } else {
+        for e in &events {
+            let time = e.starts_at.format("%H:%M");
+            let desc = e
+                .description
+                .as_deref()
+                .filter(|d| !d.is_empty())
+                .map(|d| format!(" — {d}"))
+                .unwrap_or_default();
+            text.push_str(&format!("  🕐 <b>{time}</b> {}{desc}\n", e.title));
+        }
+    }
+
+    // ── Reminders firing today ──────────────────────────────────────
+    let reminders = db.list_reminders(chat_id).unwrap_or_default();
+    let todays_reminders: Vec<_> = reminders
+        .iter()
+        .filter(|r| r.remind_at >= today_start && r.remind_at < today_end)
+        .collect();
+    text.push_str("\n⏰ <b>Reminders</b>\n");
+    if todays_reminders.is_empty() {
+        text.push_str("  No reminders today.\n");
+    } else {
+        for r in &todays_reminders {
+            let time = r.remind_at.format("%H:%M");
+            text.push_str(&format!("  🔔 <b>{time}</b> {}\n", r.message));
+        }
+    }
+
+    // ── Urgent groceries (priority ≥ 4) ─────────────────────────────
+    let groceries = db.list_groceries(true).unwrap_or_default();
+    let urgent: Vec<_> = groceries.iter().filter(|g| g.priority >= 4).collect();
+    if !urgent.is_empty() {
+        text.push_str("\n🛒 <b>Urgent Groceries</b>\n");
+        for g in &urgent {
+            let prio = "!".repeat(g.priority as usize);
+            let store = g
+                .where_to_buy
+                .as_deref()
+                .map(|s| format!(" 📍 {s}"))
+                .unwrap_or_default();
+            text.push_str(&format!(
+                "  • <b>#{}</b> {} [{prio}]{store}\n",
+                g.id, g.item
+            ));
+        }
+    }
+
+    text.push_str("\nUse /done <i>id</i> to check off chores. Have a great day! 🚀");
+    text
+}
+
 pub fn format_duration(secs: i64) -> String {
     if secs % 604800 == 0 {
         let w = secs / 604800;

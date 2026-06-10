@@ -1,0 +1,19 @@
+# BonjourDijon configuration
+# Copy to bonjourdijon.toml (or ~/.config/bonjourdijon/config.toml)
+# Priority: CLI args > env vars > this file > defaults
+
+# SQLite database path
+db = "bonjourdijon.db"
+
+# Web UI port
+port = 3000
+
+# Log level: trace, debug, info, warn, error, off
+log_level = "info"
+
+# Tera template glob
+templates = "templates/**/*.html"
+
+[telegram]
+# Telegram bot token (optional — omit to run web UI only)
+# token = "123456:ABC-DEF..."

@@ -148,7 +148,7 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, title, owner, interval_secs, cron, estimate_minutes, followups, due_at, done, chat_id, created_at
-             FROM chores WHERE chat_id = ?1 ORDER BY id",
+             FROM chores WHERE chat_id IN (0, ?1) ORDER BY id",
         )?;
         let rows = stmt.query_map(params![chat_id], Self::row_to_chore)?;
         rows.collect()
@@ -378,7 +378,7 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, chore_id, message, remind_at, chat_id, fired, interval_secs, cron, created_at
-             FROM reminders WHERE chat_id = ?1 AND fired = 0 ORDER BY remind_at ASC",
+             FROM reminders WHERE chat_id IN (0, ?1) AND fired = 0 ORDER BY remind_at ASC",
         )?;
         let rows = stmt.query_map(params![chat_id], Self::row_to_reminder)?;
         rows.collect()
@@ -468,7 +468,7 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, list_name, item, checked, added_by, chat_id, created_at
-             FROM list_items WHERE list_name = ?1 AND chat_id = ?2 ORDER BY id",
+             FROM list_items WHERE list_name = ?1 AND chat_id IN (0, ?2) ORDER BY id",
         )?;
         let rows = stmt.query_map(params![list_name, chat_id], |row| {
             Ok(ListItem {
@@ -537,7 +537,7 @@ impl Db {
     pub fn get_list_names(&self, chat_id: i64) -> rusqlite::Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT list_name FROM list_items WHERE chat_id = ?1 ORDER BY list_name",
+            "SELECT DISTINCT list_name FROM list_items WHERE chat_id IN (0, ?1) ORDER BY list_name",
         )?;
         let rows = stmt.query_map(params![chat_id], |row| row.get(0))?;
         rows.collect()
@@ -731,7 +731,7 @@ impl Db {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, title, description, starts_at, ends_at, interval_secs, cron, chat_id, created_at
-             FROM events WHERE chat_id = ?1 ORDER BY starts_at ASC",
+             FROM events WHERE chat_id IN (0, ?1) ORDER BY starts_at ASC",
         )?;
         let rows = stmt.query_map(params![chat_id], Self::row_to_event)?;
         rows.collect()
