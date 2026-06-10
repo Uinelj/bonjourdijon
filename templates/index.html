@@ -34,9 +34,16 @@
             <span class="item-title">{{ c.label }}</span>
             {% if c.detail %}<span class="tag">@{{ c.detail }}</span>{% endif %}
             {% if c.estimate_minutes %}<span class="tag">⏱ {{ c.estimate_minutes }}min</span>{% endif %}
-            <form method="POST" action="/chores/{{ c.id }}/done" style="margin-left: auto;">
-                <button type="submit" class="btn btn-small">Done ✓</button>
-            </form>
+            <div style="margin-left: auto; display: flex; gap: 0.25rem;">
+                <form method="POST" action="/chores/{{ c.id }}/postpone">
+                    <input type="hidden" name="return_to" value="/">
+                    <button type="submit" class="btn btn-small btn-muted">Tomorrow →</button>
+                </form>
+                <form method="POST" action="/chores/{{ c.id }}/done">
+                    <input type="hidden" name="return_to" value="/">
+                    <button type="submit" class="btn btn-small">Done ✓</button>
+                </form>
+            </div>
         </li>
         {% endfor %}
     </ul>

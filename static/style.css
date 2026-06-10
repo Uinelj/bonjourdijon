@@ -276,6 +276,16 @@ input[type="text"]:focus {
     background: #a8432e;
 }
 
+.btn-muted {
+    background: var(--border);
+    color: var(--text-light);
+}
+
+.btn-muted:hover {
+    background: #d8cdc2;
+    color: var(--text);
+}
+
 .empty {
     color: var(--text-light);
     font-style: italic;

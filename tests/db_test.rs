@@ -26,8 +26,20 @@ mod test_db {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(
                 "
+                CREATE TABLE chore_definitions (
+                    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title            TEXT NOT NULL,
+                    owner            TEXT,
+                    interval_secs    INTEGER,
+                    cron             TEXT,
+                    estimate_minutes INTEGER,
+                    followups        TEXT,
+                    chat_id          INTEGER NOT NULL DEFAULT 0,
+                    created_at       TEXT NOT NULL
+                );
                 CREATE TABLE chores (
                     id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                    definition_id    INTEGER,
                     title            TEXT NOT NULL,
                     owner            TEXT,
                     interval_secs    INTEGER,
@@ -403,6 +415,146 @@ mod test_db {
             )
             .unwrap()
         }
+
+        // ── Chore definitions ────────────────────────────────
+
+        pub fn create_chore_definition(
+            &self,
+            title: &str,
+            owner: Option<&str>,
+            cron: Option<&str>,
+            interval_secs: Option<i64>,
+            chat_id: i64,
+        ) -> i64 {
+            let conn = self.conn.lock().unwrap();
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO chore_definitions (title, owner, cron, interval_secs, chat_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![title, owner, cron, interval_secs, chat_id, now],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        }
+
+        pub fn create_chore_instance(
+            &self,
+            definition_id: i64,
+            title: &str,
+            due_at: DateTime<Utc>,
+            chat_id: i64,
+        ) -> i64 {
+            let conn = self.conn.lock().unwrap();
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO chores (definition_id, title, due_at, done, chat_id, created_at)
+                 VALUES (?1, ?2, ?3, 0, ?4, ?5)",
+                params![definition_id, title, due_at.to_rfc3339(), chat_id, now],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        }
+
+        pub fn get_chore_definition_id(&self, chore_id: i64) -> Option<i64> {
+            let conn = self.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT definition_id FROM chores WHERE id = ?1",
+                params![chore_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        }
+
+        pub fn pending_instances_count(&self, definition_id: i64) -> usize {
+            let conn = self.conn.lock().unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM chores WHERE definition_id = ?1 AND done = 0",
+                    params![definition_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            count as usize
+        }
+
+        pub fn definition_count(&self) -> usize {
+            let conn = self.conn.lock().unwrap();
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM chore_definitions", [], |row| row.get(0))
+                .unwrap();
+            count as usize
+        }
+
+        pub fn delete_chore_definition(&self, id: i64) -> bool {
+            let conn = self.conn.lock().unwrap();
+            // Delete pending instances
+            conn.execute("DELETE FROM chores WHERE definition_id = ?1 AND done = 0", params![id])
+                .unwrap();
+            conn.execute("DELETE FROM chore_definitions WHERE id = ?1", params![id])
+                .unwrap()
+                > 0
+        }
+
+        /// Create a chore with a specific due_at. Returns the chore id.
+        pub fn create_chore_with_due(&self, title: &str, due_at: DateTime<Utc>, chat_id: i64) -> i64 {
+            let conn = self.conn.lock().unwrap();
+            let now = Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO chores (title, due_at, done, chat_id, created_at) VALUES (?1, ?2, 0, ?3, ?4)",
+                params![title, due_at.to_rfc3339(), chat_id, now],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        }
+
+        /// Get the due_at for a chore.
+        pub fn get_due_at(&self, id: i64) -> Option<DateTime<Utc>> {
+            let conn = self.conn.lock().unwrap();
+            let raw: Option<String> = conn
+                .query_row("SELECT due_at FROM chores WHERE id = ?1", params![id], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            raw.map(|s| {
+                chrono::DateTime::parse_from_rfc3339(&s)
+                    .unwrap()
+                    .with_timezone(&Utc)
+            })
+        }
+
+        /// Postpone a chore to tomorrow 09:00 UTC.
+        pub fn postpone_chore(&self, id: i64) -> bool {
+            use chrono::{NaiveTime, TimeZone};
+            let tomorrow_9am = (Utc::now().date_naive() + chrono::Duration::days(1))
+                .and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+            let tomorrow = Utc.from_utc_datetime(&tomorrow_9am);
+            let conn = self.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE chores SET due_at = ?1 WHERE id = ?2 AND done = 0",
+                params![tomorrow.to_rfc3339(), id],
+            )
+            .unwrap()
+                > 0
+        }
+
+        /// Roll over overdue undone chores to tomorrow 09:00 UTC.
+        pub fn rollover_overdue_chores(&self) -> usize {
+            use chrono::{NaiveTime, TimeZone};
+            let tomorrow_9am = (Utc::now().date_naive() + chrono::Duration::days(1))
+                .and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+            let tomorrow = Utc.from_utc_datetime(&tomorrow_9am);
+            let today_start = Utc.from_utc_datetime(
+                &Utc::now()
+                    .date_naive()
+                    .and_time(NaiveTime::from_hms_opt(0, 0, 0).unwrap()),
+            );
+            let conn = self.conn.lock().unwrap();
+            conn.execute(
+                "UPDATE chores SET due_at = ?1 WHERE done = 0 AND due_at IS NOT NULL AND due_at < ?2",
+                params![tomorrow.to_rfc3339(), today_start.to_rfc3339()],
+            )
+            .unwrap()
+        }
     }
 }
 
@@ -720,4 +872,175 @@ fn test_chore_reschedule() {
 
     // Chore should still not be done
     assert!(!db.is_done(id));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//  Chore definition / instance decoupling tests
+// ═══════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_definition_creates_instances() {
+    let db = test_db::Db::open_memory();
+
+    // Create a definition with a weekly cron
+    let def_id = db.create_chore_definition("Weekly vacuum", None, Some("0 9 * * 0"), None, 100);
+    assert!(def_id > 0);
+    assert_eq!(db.definition_count(), 1);
+
+    // Create an instance linked to the definition
+    let due = Utc::now() + Duration::days(3);
+    let instance_id = db.create_chore_instance(def_id, "Weekly vacuum", due, 100);
+    assert!(instance_id > 0);
+
+    // The instance should be linked to the definition
+    assert_eq!(db.get_chore_definition_id(instance_id), Some(def_id));
+    assert_eq!(db.pending_instances_count(def_id), 1);
+}
+
+#[test]
+fn test_completing_instance_keeps_definition() {
+    let db = test_db::Db::open_memory();
+
+    let def_id = db.create_chore_definition("Daily dishes", None, Some("0 9 * * *"), None, 100);
+    let due = Utc::now();
+    let instance_id = db.create_chore_instance(def_id, "Daily dishes", due, 100);
+
+    // Complete the instance
+    assert!(db.mark_done(instance_id));
+    assert!(db.is_done(instance_id));
+
+    // No more pending instances
+    assert_eq!(db.pending_instances_count(def_id), 0);
+
+    // The definition still exists
+    assert_eq!(db.definition_count(), 1);
+
+    // We can create a new instance for the next occurrence
+    let next_due = Utc::now() + Duration::days(1);
+    let next_instance_id = db.create_chore_instance(def_id, "Daily dishes", next_due, 100);
+    assert_eq!(db.pending_instances_count(def_id), 1);
+
+    // Old instance is still done, new one is pending
+    assert!(db.is_done(instance_id));
+    assert!(!db.is_done(next_instance_id));
+}
+
+#[test]
+fn test_delete_definition_cleans_up_instances() {
+    let db = test_db::Db::open_memory();
+
+    let def_id = db.create_chore_definition("Weekly laundry", None, Some("0 9 * * 1"), None, 100);
+    let due = Utc::now() + Duration::days(2);
+    let instance_id = db.create_chore_instance(def_id, "Weekly laundry", due, 100);
+
+    // Instance exists
+    assert_eq!(db.pending_instances_count(def_id), 1);
+
+    // Delete the definition
+    assert!(db.delete_chore_definition(def_id));
+
+    // Both definition and pending instance are gone
+    assert_eq!(db.definition_count(), 0);
+    assert_eq!(db.pending_instances_count(def_id), 0);
+
+    // Instance row is deleted because it was pending
+    assert!(!db.mark_done(instance_id)); // can't mark non-existent
+}
+
+#[test]
+fn test_onetime_chore_has_no_definition() {
+    let db = test_db::Db::open_memory();
+
+    let id = db.create_chore("Do laundry once", Some("alice"), 100);
+
+    // One-time chore has no definition_id
+    assert_eq!(db.get_chore_definition_id(id), None);
+
+    // Mark done — stays done, no respawn
+    assert!(db.mark_done(id));
+    assert!(db.is_done(id));
+
+    // No definitions created
+    assert_eq!(db.definition_count(), 0);
+}
+
+#[test]
+fn test_postpone_chore() {
+    use chrono::TimeZone;
+    let db = test_db::Db::open_memory();
+
+    // Create a chore due today at midnight
+    let today_midnight = Utc.from_utc_datetime(
+        &Utc::now()
+            .date_naive()
+            .and_time(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()),
+    );
+    let id = db.create_chore_with_due("Mop floors", today_midnight, 100);
+
+    // Postpone it
+    assert!(db.postpone_chore(id));
+
+    // due_at should now be tomorrow at 09:00 UTC
+    let due = db.get_due_at(id).expect("should have due_at");
+    let tomorrow_9am = (Utc::now().date_naive() + Duration::days(1))
+        .and_time(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+    let expected = Utc.from_utc_datetime(&tomorrow_9am);
+    assert_eq!(due, expected);
+}
+
+#[test]
+fn test_postpone_done_chore_is_noop() {
+    use chrono::TimeZone;
+    let db = test_db::Db::open_memory();
+
+    let today = Utc.from_utc_datetime(
+        &Utc::now()
+            .date_naive()
+            .and_time(chrono::NaiveTime::from_hms_opt(10, 0, 0).unwrap()),
+    );
+    let id = db.create_chore_with_due("Already done", today, 100);
+    db.mark_done(id);
+
+    // Postponing a done chore should not update anything
+    assert!(!db.postpone_chore(id));
+}
+
+#[test]
+fn test_rollover_overdue_chores() {
+    use chrono::TimeZone;
+    let db = test_db::Db::open_memory();
+
+    let yesterday = Utc.from_utc_datetime(
+        &(Utc::now().date_naive() - Duration::days(1))
+            .and_time(chrono::NaiveTime::from_hms_opt(14, 0, 0).unwrap()),
+    );
+    let today_noon = Utc.from_utc_datetime(
+        &Utc::now()
+            .date_naive()
+            .and_time(chrono::NaiveTime::from_hms_opt(12, 0, 0).unwrap()),
+    );
+
+    // Overdue chore (yesterday) — should be rolled over
+    let overdue_id = db.create_chore_with_due("Overdue task", yesterday, 100);
+
+    // Today's chore — should NOT be rolled over
+    let today_id = db.create_chore_with_due("Today task", today_noon, 100);
+
+    // Done overdue chore — should NOT be rolled over
+    let done_id = db.create_chore_with_due("Done yesterday", yesterday, 100);
+    db.mark_done(done_id);
+
+    let rolled = db.rollover_overdue_chores();
+    assert_eq!(rolled, 1); // only the one overdue undone chore
+
+    // Overdue chore moved to tomorrow 09:00
+    let new_due = db.get_due_at(overdue_id).expect("should have due_at");
+    let tomorrow_9am = (Utc::now().date_naive() + Duration::days(1))
+        .and_time(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+    let expected = Utc.from_utc_datetime(&tomorrow_9am);
+    assert_eq!(new_due, expected);
+
+    // Today's chore unchanged
+    let today_due = db.get_due_at(today_id).expect("should have due_at");
+    assert_eq!(today_due, today_noon);
 }

@@ -212,7 +212,7 @@ async fn handle_command(
                     .await?;
                 return Ok(());
             }
-            match db.create_chore(title, Some(&username), None, None, None, None, None, chat_id) {
+            match db.create_chore(title, Some(&username), None, None, None, chat_id) {
                 Ok(chore) => {
                     bot.send_message(
                         msg.chat.id,

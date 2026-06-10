@@ -1,0 +1,20 @@
+services:
+  bonjourdijon:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - data:/app/data
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      BONJOURDIJON_DB: /app/data/bonjourdijon.db
+      # Uncomment below or set in .env:
+      # TELOXIDE_TOKEN: "123456:ABC-DEF..."
+      # OPENROUTER_API_KEY: "sk-or-v1-..."
+      # OPENROUTER_MODEL: "google/gemini-2.0-flash-exp:free"
+    restart: unless-stopped
+
+volumes:
+  data:

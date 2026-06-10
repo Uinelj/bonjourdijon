@@ -13,9 +13,32 @@ pub struct FollowupStep {
     pub estimate_minutes: Option<i64>,
 }
 
+/// A recurring chore schedule definition.
+/// Instances (concrete tasks) are spawned from this as separate `Chore` rows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChoreDefinition {
+    pub id: i64,
+    pub title: String,
+    pub owner: Option<String>,
+    /// Repeat every N seconds (for interval-based recurrence)
+    pub interval_secs: Option<i64>,
+    /// Cron expression for calendar-aligned recurrence (5-field: min hour dom month dow)
+    pub cron: Option<String>,
+    /// Estimated time to complete in minutes
+    pub estimate_minutes: Option<i64>,
+    /// Chain of followup steps triggered when an instance is completed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub followups: Option<Vec<FollowupStep>>,
+    pub chat_id: i64,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chore {
     pub id: i64,
+    /// If set, this chore is an instance of a recurring definition.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub definition_id: Option<i64>,
     pub title: String,
     pub owner: Option<String>,
     /// For periodic chores: repeat every N seconds

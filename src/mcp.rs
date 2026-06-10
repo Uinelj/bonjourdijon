@@ -12,6 +12,32 @@ use crate::recurrence;
 const SERVER_NAME: &str = "bonjourdijon";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Handle a single JSON-RPC request and return a JSON-RPC response.
+/// Returns `None` for notifications that don't need a reply.
+pub fn handle_jsonrpc_request(request: &Value, db: &Db) -> Option<Value> {
+    let id = request.get("id").cloned().unwrap_or(Value::Null);
+    let method = request
+        .get("method")
+        .and_then(|m| m.as_str())
+        .unwrap_or("");
+    let params = request.get("params").cloned().unwrap_or(json!({}));
+
+    match method {
+        "initialize" => Some(handle_initialize(&id)),
+        "notifications/initialized" => None,
+        "tools/list" => Some(handle_tools_list(&id)),
+        "tools/call" => Some(handle_tools_call(&id, &params, db)),
+        _ => Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32601,
+                "message": format!("Method not found: {method}")
+            }
+        })),
+    }
+}
+
 pub async fn run(db: Arc<Db>) {
     let stdin = tokio::io::stdin();
     let mut stdout = tokio::io::stdout();
@@ -52,29 +78,9 @@ pub async fn run(db: Arc<Db>) {
             }
         };
 
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request
-            .get("method")
-            .and_then(|m| m.as_str())
-            .unwrap_or("");
-        let params = request.get("params").cloned().unwrap_or(json!({}));
-
-        let response = match method {
-            "initialize" => handle_initialize(&id),
-            "notifications/initialized" => continue, // no response needed
-            "tools/list" => handle_tools_list(&id),
-            "tools/call" => handle_tools_call(&id, &params, &db),
-            _ => json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": {
-                    "code": -32601,
-                    "message": format!("Method not found: {method}")
-                }
-            }),
-        };
-
-        write_response(&mut stdout, &response).await;
+        if let Some(response) = handle_jsonrpc_request(&request, &db) {
+            write_response(&mut stdout, &response).await;
+        }
     }
 }
 
@@ -196,6 +202,26 @@ pub fn get_tools_json() -> Value {
                 "type": "object",
                 "properties": {
                     "id": { "type": "integer", "description": "Chore ID to delete" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "list_chore_definitions",
+            "description": "List all recurring chore schedules (definitions). Each definition automatically spawns concrete chore instances on its schedule.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
+            "name": "delete_chore_definition",
+            "description": "Delete a recurring chore schedule and all its pending instances.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Chore definition ID to delete" }
                 },
                 "required": ["id"]
             }
@@ -519,6 +545,8 @@ pub fn call_tool(name: &str, arguments: &Value, db: &Db) -> Result<String, Strin
         "complete_chore" => tool_complete_chore(db, arguments),
         "assign_chore" => tool_assign_chore(db, arguments),
         "delete_chore" => tool_delete_chore(db, arguments),
+        "list_chore_definitions" => tool_list_chore_definitions(db),
+        "delete_chore_definition" => tool_delete_chore_definition(db, arguments),
         // Reminders
         "get_reminder" => tool_get_reminder(db, arguments),
         "list_reminders" => tool_list_reminders(db),
@@ -619,10 +647,39 @@ fn tool_create_chore(db: &Db, args: &Value) -> Result<String, String> {
         .get("due_at")
         .and_then(|s| s.as_str())
         .and_then(|s| parse_datetime_flexible(s));
-    let chore = db
-        .create_chore(title, owner, interval_secs, cron_expr, estimate_minutes, followups.as_deref(), due_at, 0)
-        .map_err(|e| e.to_string())?;
-    serde_json::to_string_pretty(&chore).map_err(|e| e.to_string())
+
+    let is_recurring = cron_expr.is_some() || interval_secs.is_some();
+
+    if is_recurring {
+        let (def, instance) = db.create_chore_definition(
+            title, owner, interval_secs, cron_expr, estimate_minutes, followups.as_deref(), 0,
+        )?;
+        let result = json!({
+            "definition": serde_json::to_value(&def).unwrap_or_default(),
+            "first_instance": serde_json::to_value(&instance).unwrap_or_default(),
+        });
+        serde_json::to_string_pretty(&result).map_err(|e| e.to_string())
+    } else {
+        let chore = db
+            .create_chore(title, owner, estimate_minutes, followups.as_deref(), due_at, 0)
+            .map_err(|e| e.to_string())?;
+        serde_json::to_string_pretty(&chore).map_err(|e| e.to_string())
+    }
+}
+
+fn tool_list_chore_definitions(db: &Db) -> Result<String, String> {
+    let defs = db.list_chore_definitions().map_err(|e| e.to_string())?;
+    serde_json::to_string_pretty(&defs).map_err(|e| e.to_string())
+}
+
+fn tool_delete_chore_definition(db: &Db, args: &Value) -> Result<String, String> {
+    let id = args.get("id").and_then(|i| i.as_i64()).ok_or("Missing required field: id")?;
+    let deleted = db.delete_chore_definition(id).map_err(|e| e.to_string())?;
+    if deleted {
+        Ok(format!("Chore definition #{id} and its pending instances deleted."))
+    } else {
+        Err(format!("Chore definition #{id} not found."))
+    }
 }
 
 fn tool_complete_chore(db: &Db, args: &Value) -> Result<String, String> {

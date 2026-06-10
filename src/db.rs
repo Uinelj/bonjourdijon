@@ -1,9 +1,9 @@
 use std::sync::Mutex;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use rusqlite::{Connection, params};
 
-use crate::models::{Chore, Event, FollowupStep, GroceryItem, ListItem, Reminder};
+use crate::models::{Chore, ChoreDefinition, Event, FollowupStep, GroceryItem, ListItem, Reminder};
 use crate::recurrence;
 
 pub struct Db {
@@ -92,17 +92,226 @@ impl Db {
         // Add followups JSON column to chores
         let _ = conn.execute_batch("ALTER TABLE chores ADD COLUMN followups TEXT;");
 
+        // ── Chore definitions (schedule ↔ instance split) ─────────────
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS chore_definitions (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                title            TEXT NOT NULL,
+                owner            TEXT,
+                interval_secs    INTEGER,
+                cron             TEXT,
+                estimate_minutes INTEGER,
+                followups        TEXT,
+                chat_id          INTEGER NOT NULL DEFAULT 0,
+                created_at       TEXT NOT NULL
+            );",
+        )?;
+        // Link chore instances to their definition (idempotent)
+        let _ = conn.execute_batch("ALTER TABLE chores ADD COLUMN definition_id INTEGER;");
+
+        // Migrate legacy recurring chores → definitions + instances
+        self.migrate_recurring_chores(&conn)?;
+
         Ok(())
     }
 
-    // ─── Chores ──────────────────────────────────────────────────────
+    // ─── Chore Definitions (recurring schedules) ───────────────────
 
-    pub fn create_chore(
+    /// Create a recurring chore definition and spawn its first instance.
+    pub fn create_chore_definition(
         &self,
         title: &str,
         owner: Option<&str>,
         interval_secs: Option<i64>,
         cron: Option<&str>,
+        estimate_minutes: Option<i64>,
+        followups: Option<&[FollowupStep]>,
+        chat_id: i64,
+    ) -> Result<(ChoreDefinition, Chore), String> {
+        let now = Utc::now();
+        let followups_json = followups
+            .filter(|f| !f.is_empty())
+            .map(|f| serde_json::to_string(f).unwrap_or_default());
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO chore_definitions (title, owner, interval_secs, cron, estimate_minutes, followups, chat_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![title, owner, interval_secs, cron, estimate_minutes, followups_json, chat_id, now.to_rfc3339()],
+        ).map_err(|e| e.to_string())?;
+        let def_id = conn.last_insert_rowid();
+        let def = ChoreDefinition {
+            id: def_id,
+            title: title.to_string(),
+            owner: owner.map(|s| s.to_string()),
+            interval_secs,
+            cron: cron.map(|s| s.to_string()),
+            estimate_minutes,
+            followups: followups.filter(|f| !f.is_empty()).map(|f| f.to_vec()),
+            chat_id,
+            created_at: now,
+        };
+        drop(conn); // release lock before calling spawn
+        let instance = self.spawn_next_instance(&def)?
+            .ok_or_else(|| "Could not compute first due date for this schedule.".to_string())?;
+        Ok((def, instance))
+    }
+
+    /// Spawn the next pending instance for a definition.
+    /// Returns None if no next occurrence can be computed.
+    pub fn spawn_next_instance(&self, def: &ChoreDefinition) -> Result<Option<Chore>, String> {
+        let now = Utc::now();
+        let next = recurrence::next_occurrence_after(
+            now,
+            def.cron.as_deref(),
+            def.interval_secs,
+            now - Duration::seconds(1), // allow "now" to match
+        );
+        let due_at = match next {
+            Some(dt) => dt,
+            None => return Ok(None),
+        };
+        let instance = self.create_chore_instance(
+            def.id,
+            &def.title,
+            def.owner.as_deref(),
+            def.estimate_minutes,
+            def.followups.as_deref(),
+            Some(due_at),
+            def.chat_id,
+        ).map_err(|e| e.to_string())?;
+        Ok(Some(instance))
+    }
+
+    pub fn get_chore_definition(&self, id: i64) -> rusqlite::Result<Option<ChoreDefinition>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, title, owner, interval_secs, cron, estimate_minutes, followups, chat_id, created_at
+             FROM chore_definitions WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], Self::row_to_chore_definition)?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn list_chore_definitions(&self) -> rusqlite::Result<Vec<ChoreDefinition>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, title, owner, interval_secs, cron, estimate_minutes, followups, chat_id, created_at
+             FROM chore_definitions ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], Self::row_to_chore_definition)?;
+        rows.collect()
+    }
+
+    pub fn delete_chore_definition(&self, id: i64) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        // Delete pending instances belonging to this definition
+        conn.execute("DELETE FROM chores WHERE definition_id = ?1 AND done = 0", params![id])?;
+        let deleted = conn.execute("DELETE FROM chore_definitions WHERE id = ?1", params![id])?;
+        Ok(deleted > 0)
+    }
+
+    /// Get the current pending instance for a definition (if any).
+    pub fn get_pending_instance(&self, definition_id: i64) -> rusqlite::Result<Option<Chore>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, definition_id, title, owner, interval_secs, cron, estimate_minutes, followups, due_at, done, chat_id, created_at
+             FROM chores WHERE definition_id = ?1 AND done = 0 ORDER BY due_at ASC LIMIT 1",
+        )?;
+        let mut rows = stmt.query_map(params![definition_id], Self::row_to_chore)?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    fn row_to_chore_definition(row: &rusqlite::Row) -> rusqlite::Result<ChoreDefinition> {
+        let followups_json: Option<String> = row.get(6)?;
+        let followups = followups_json
+            .as_deref()
+            .and_then(|s| serde_json::from_str::<Vec<FollowupStep>>(s).ok())
+            .filter(|v| !v.is_empty());
+        Ok(ChoreDefinition {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            owner: row.get(2)?,
+            interval_secs: row.get(3)?,
+            cron: row.get(4)?,
+            estimate_minutes: row.get(5)?,
+            followups,
+            chat_id: row.get(7)?,
+            created_at: parse_dt(row.get::<_, String>(8)?),
+        })
+    }
+
+    /// Migrate legacy recurring chores (have cron/interval_secs but no definition_id)
+    /// into the new definitions + instances model.
+    fn migrate_recurring_chores(&self, conn: &Connection) -> rusqlite::Result<()> {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM chores
+             WHERE (cron IS NOT NULL OR interval_secs IS NOT NULL)
+               AND definition_id IS NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        if count == 0 {
+            return Ok(());
+        }
+
+        let mut read_stmt = conn.prepare(
+            "SELECT id, title, owner, interval_secs, cron, estimate_minutes, followups, chat_id, created_at
+             FROM chores
+             WHERE (cron IS NOT NULL OR interval_secs IS NOT NULL)
+               AND definition_id IS NULL",
+        )?;
+        let legacy: Vec<(i64, String, Option<String>, Option<i64>, Option<String>, Option<i64>, Option<String>, i64, String)> =
+            read_stmt.query_map([], |row| {
+                Ok((
+                    row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?,
+                    row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?,
+                ))
+            })?.collect::<rusqlite::Result<Vec<_>>>()?;
+
+        for (chore_id, title, owner, interval_secs, cron, estimate_minutes, followups_json, chat_id, created_at) in legacy {
+            conn.execute(
+                "INSERT INTO chore_definitions (title, owner, interval_secs, cron, estimate_minutes, followups, chat_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![title, owner, interval_secs, cron, estimate_minutes, followups_json, chat_id, created_at],
+            )?;
+            let def_id = conn.last_insert_rowid();
+            conn.execute(
+                "UPDATE chores SET definition_id = ?1 WHERE id = ?2",
+                params![def_id, chore_id],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    // ─── Chores (concrete instances) ─────────────────────────────────
+
+    /// Create a one-time chore (no recurring definition).
+    pub fn create_chore(
+        &self,
+        title: &str,
+        owner: Option<&str>,
+        estimate_minutes: Option<i64>,
+        followups: Option<&[FollowupStep]>,
+        due_at: Option<DateTime<Utc>>,
+        chat_id: i64,
+    ) -> rusqlite::Result<Chore> {
+        self.create_chore_instance(0, title, owner, estimate_minutes, followups, due_at, chat_id)
+            .map(|mut c| { c.definition_id = None; c })
+    }
+
+    /// Internal: create a chore row, optionally linked to a definition.
+    fn create_chore_instance(
+        &self,
+        definition_id: i64,
+        title: &str,
+        owner: Option<&str>,
         estimate_minutes: Option<i64>,
         followups: Option<&[FollowupStep]>,
         due_at: Option<DateTime<Utc>>,
@@ -112,15 +321,15 @@ impl Db {
         let followups_json = followups
             .filter(|f| !f.is_empty())
             .map(|f| serde_json::to_string(f).unwrap_or_default());
+        let def_id_val: Option<i64> = if definition_id > 0 { Some(definition_id) } else { None };
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO chores (title, owner, interval_secs, cron, estimate_minutes, followups, due_at, done, chat_id, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, ?8, ?9)",
+            "INSERT INTO chores (definition_id, title, owner, estimate_minutes, followups, due_at, done, chat_id, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7, ?8)",
             params![
+                def_id_val,
                 title,
                 owner,
-                interval_secs,
-                cron,
                 estimate_minutes,
                 followups_json,
                 due_at.map(|d| d.to_rfc3339()),
@@ -131,10 +340,11 @@ impl Db {
         let id = conn.last_insert_rowid();
         Ok(Chore {
             id,
+            definition_id: def_id_val,
             title: title.to_string(),
             owner: owner.map(|s| s.to_string()),
-            interval_secs,
-            cron: cron.map(|s| s.to_string()),
+            interval_secs: None,
+            cron: None,
             estimate_minutes,
             followups: followups.filter(|f| !f.is_empty()).map(|f| f.to_vec()),
             due_at,
@@ -147,7 +357,7 @@ impl Db {
     pub fn list_chores(&self, chat_id: i64) -> rusqlite::Result<Vec<Chore>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, title, owner, interval_secs, cron, estimate_minutes, followups, due_at, done, chat_id, created_at
+            "SELECT id, definition_id, title, owner, interval_secs, cron, estimate_minutes, followups, due_at, done, chat_id, created_at
              FROM chores WHERE chat_id IN (0, ?1) ORDER BY id",
         )?;
         let rows = stmt.query_map(params![chat_id], Self::row_to_chore)?;
@@ -157,8 +367,19 @@ impl Db {
     pub fn list_all_chores(&self) -> rusqlite::Result<Vec<Chore>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, title, owner, interval_secs, cron, estimate_minutes, followups, due_at, done, chat_id, created_at
+            "SELECT id, definition_id, title, owner, interval_secs, cron, estimate_minutes, followups, due_at, done, chat_id, created_at
              FROM chores ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], Self::row_to_chore)?;
+        rows.collect()
+    }
+
+    /// List one-time chores only (no definition_id).
+    pub fn list_onetime_chores(&self) -> rusqlite::Result<Vec<Chore>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, definition_id, title, owner, interval_secs, cron, estimate_minutes, followups, due_at, done, chat_id, created_at
+             FROM chores WHERE definition_id IS NULL ORDER BY id",
         )?;
         let rows = stmt.query_map([], Self::row_to_chore)?;
         rows.collect()
@@ -167,7 +388,7 @@ impl Db {
     pub fn get_chore(&self, id: i64) -> rusqlite::Result<Option<Chore>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, title, owner, interval_secs, cron, estimate_minutes, followups, due_at, done, chat_id, created_at
+            "SELECT id, definition_id, title, owner, interval_secs, cron, estimate_minutes, followups, due_at, done, chat_id, created_at
              FROM chores WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], Self::row_to_chore)?;
@@ -199,29 +420,50 @@ impl Db {
     pub fn get_pending_chores(&self, chat_id: i64) -> rusqlite::Result<Vec<Chore>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, title, owner, interval_secs, cron, estimate_minutes, followups, due_at, done, chat_id, created_at
+            "SELECT id, definition_id, title, owner, interval_secs, cron, estimate_minutes, followups, due_at, done, chat_id, created_at
              FROM chores WHERE chat_id = ?1 AND done = 0 ORDER BY due_at ASC, id ASC",
         )?;
         let rows = stmt.query_map(params![chat_id], Self::row_to_chore)?;
         rows.collect()
     }
 
-    /// Reschedule a recurring chore to a new due date (and reset done = 0).
-    pub fn reschedule_chore(
-        &self,
-        id: i64,
-        new_due: DateTime<Utc>,
-    ) -> rusqlite::Result<bool> {
+    /// Postpone a chore by moving its `due_at` to tomorrow at 09:00 UTC.
+    /// Returns `true` if the chore was found and updated.
+    pub fn postpone_chore(&self, id: i64) -> rusqlite::Result<bool> {
+        let tomorrow_9am = (Utc::now().date_naive() + chrono::Duration::days(1))
+            .and_time(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+        let tomorrow = Utc.from_utc_datetime(&tomorrow_9am);
         let conn = self.conn.lock().unwrap();
         let updated = conn.execute(
-            "UPDATE chores SET due_at = ?1, done = 0 WHERE id = ?2",
-            params![new_due.to_rfc3339(), id],
+            "UPDATE chores SET due_at = ?1 WHERE id = ?2 AND done = 0",
+            params![tomorrow.to_rfc3339(), id],
         )?;
         Ok(updated > 0)
     }
 
-    /// Complete a chore: handles recurring reschedule, and spawns the next
-    /// followup step if the chore has a followup chain.
+    /// Roll over all overdue undone chores to tomorrow at 09:00 UTC.
+    /// "Overdue" means `due_at < start of today`. Returns the count of
+    /// chores bumped.
+    pub fn rollover_overdue_chores(&self) -> rusqlite::Result<usize> {
+        let tomorrow_9am = (Utc::now().date_naive() + chrono::Duration::days(1))
+            .and_time(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap());
+        let tomorrow = Utc.from_utc_datetime(&tomorrow_9am);
+        let today_start = Utc.from_utc_datetime(
+            &Utc::now()
+                .date_naive()
+                .and_time(chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap()),
+        );
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE chores SET due_at = ?1
+             WHERE done = 0 AND due_at IS NOT NULL AND due_at < ?2",
+            params![tomorrow.to_rfc3339(), today_start.to_rfc3339()],
+        )?;
+        Ok(updated)
+    }
+
+    /// Complete a chore instance. If it belongs to a recurring definition,
+    /// a new instance for the next due date is spawned automatically.
     /// Returns a human-readable status message.
     pub fn complete_chore(&self, id: i64) -> Result<String, String> {
         let chore = self
@@ -229,33 +471,25 @@ impl Db {
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("Chore #{id} not found."))?;
 
-        let is_recurring = chore.cron.is_some() || chore.interval_secs.is_some();
+        // 1. Mark this instance as done
+        self.mark_chore_done(id).map_err(|e| e.to_string())?;
+        let mut msg = format!("Chore #{id} marked as done. ✅");
 
-        // 1. Handle recurring reschedule or mark done
-        let mut msg = if is_recurring {
-            let now = Utc::now();
-            let anchor = chore.due_at.unwrap_or(now);
-            if let Some(next) = recurrence::next_occurrence_after(
-                anchor,
-                chore.cron.as_deref(),
-                chore.interval_secs,
-                now,
-            ) {
-                self.reschedule_chore(id, next).map_err(|e| e.to_string())?;
-                format!(
-                    "Chore #{id} done! ✅ Next due: {}",
-                    next.format("%Y-%m-%d")
-                )
-            } else {
-                self.mark_chore_done(id).map_err(|e| e.to_string())?;
-                format!("Chore #{id} marked as done.")
+        // 2. If it belongs to a definition, spawn the next instance
+        if let Some(def_id) = chore.definition_id {
+            if let Some(def) = self.get_chore_definition(def_id).map_err(|e| e.to_string())? {
+                if let Some(next_instance) = self.spawn_next_instance(&def)? {
+                    if let Some(next_due) = next_instance.due_at {
+                        msg = format!(
+                            "Chore #{id} done! ✅ Next due: {}",
+                            next_due.format("%Y-%m-%d")
+                        );
+                    }
+                }
             }
-        } else {
-            self.mark_chore_done(id).map_err(|e| e.to_string())?;
-            format!("Chore #{id} marked as done.")
-        };
+        }
 
-        // 2. Spawn next followup if present
+        // 3. Spawn next followup if present
         if let Some(mut steps) = chore.followups {
             if !steps.is_empty() {
                 let next_step = steps.remove(0);
@@ -265,8 +499,6 @@ impl Db {
                     .create_chore(
                         &next_step.title,
                         chore.owner.as_deref(),
-                        None,  // not recurring
-                        None,  // no cron
                         next_step.estimate_minutes,
                         remaining.as_deref(),
                         Some(due_at),
@@ -285,23 +517,24 @@ impl Db {
     }
 
     fn row_to_chore(row: &rusqlite::Row) -> rusqlite::Result<Chore> {
-        let followups_json: Option<String> = row.get(6)?;
+        let followups_json: Option<String> = row.get(7)?;
         let followups = followups_json
             .as_deref()
             .and_then(|s| serde_json::from_str::<Vec<FollowupStep>>(s).ok())
             .filter(|v| !v.is_empty());
         Ok(Chore {
             id: row.get(0)?,
-            title: row.get(1)?,
-            owner: row.get(2)?,
-            interval_secs: row.get(3)?,
-            cron: row.get(4)?,
-            estimate_minutes: row.get(5)?,
+            definition_id: row.get(1)?,
+            title: row.get(2)?,
+            owner: row.get(3)?,
+            interval_secs: row.get(4)?,
+            cron: row.get(5)?,
+            estimate_minutes: row.get(6)?,
             followups,
-            due_at: parse_optional_dt(row.get::<_, Option<String>>(7)?),
-            done: row.get::<_, i32>(8)? != 0,
-            chat_id: row.get(9)?,
-            created_at: parse_dt(row.get::<_, String>(10)?),
+            due_at: parse_optional_dt(row.get::<_, Option<String>>(8)?),
+            done: row.get::<_, i32>(9)? != 0,
+            chat_id: row.get(10)?,
+            created_at: parse_dt(row.get::<_, String>(11)?),
         })
     }
 

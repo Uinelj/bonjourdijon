@@ -32,12 +32,20 @@ pub async fn run(db: Arc<Db>, bot: Bot) {
             }
         }
 
-        // ── Daily digest ────────────────────────────────────────────
+        // ── Daily rollover + digest ──────────────────────────────────
         let local_now = Local::now();
         let today = local_now.date_naive();
 
         if local_now.hour() >= DAILY_DIGEST_HOUR && last_digest_date != Some(today) {
             last_digest_date = Some(today);
+
+            // Roll over any overdue undone chores to tomorrow
+            match db.rollover_overdue_chores() {
+                Ok(0) => {}
+                Ok(n) => info!("Rolled over {n} overdue chore(s) to tomorrow"),
+                Err(e) => error!("Failed to roll over overdue chores: {e}"),
+            }
+
             info!("Sending daily digest for {today}");
 
             match db.get_active_chat_ids() {

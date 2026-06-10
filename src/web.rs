@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
-    Form, Router,
+    Form, Json, Router,
     extract::{Path, Query, State},
     response::{Html, Redirect},
     routing::{get, post},
@@ -12,6 +12,7 @@ use tera::{Context, Tera};
 use tower_http::services::ServeDir;
 
 use crate::db::Db;
+use crate::mcp;
 use crate::recurrence;
 
 #[derive(Clone)]
@@ -31,6 +32,8 @@ pub fn router(db: Arc<Db>, tera: Tera) -> Router {
         .route("/chores", get(chores_page))
         .route("/chores", post(create_chore))
         .route("/chores/{id}/done", post(mark_done))
+        .route("/chores/{id}/postpone", post(postpone_chore))
+        .route("/chores/definitions/{id}/delete", post(delete_chore_definition))
         .route("/lists", get(lists_page))
         .route("/lists/{name}", get(list_items_page))
         .route("/lists/{name}", post(add_list_item))
@@ -42,8 +45,22 @@ pub fn router(db: Arc<Db>, tera: Tera) -> Router {
         .route("/calendar", get(calendar_page))
         .route("/events", post(create_event))
         .route("/events/{id}/delete", post(delete_event))
+        .route("/mcp", post(mcp_handler))
         .nest_service("/static", ServeDir::new("static"))
         .with_state(state)
+}
+
+// ─── MCP over HTTP ───────────────────────────────────────────────────
+
+async fn mcp_handler(
+    State(state): State<AppState>,
+    Json(request): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    match mcp::handle_jsonrpc_request(&request, &state.db) {
+        Some(response) => Json(response),
+        // Notification (no response needed) — return an empty JSON object
+        None => Json(serde_json::json!({})),
+    }
 }
 
 // ─── Handlers ────────────────────────────────────────────────────────
@@ -83,6 +100,10 @@ async fn index(State(state): State<AppState>) -> Html<String> {
     }
 
     // ── Today's chores ────────────────────────────────────────────
+    // Use `due_at` directly as the source of truth rather than expanding
+    // cron occurrences.  `complete_chore` reschedules recurring chores to
+    // the *next* due date, so a chore that was just completed today will
+    // have its `due_at` moved to a future date and won't appear here.
     let all_chores = state.db.list_all_chores().unwrap_or_default();
     let mut today_chores: Vec<TodayItem> = Vec::new();
     for ch in &all_chores {
@@ -90,10 +111,7 @@ async fn index(State(state): State<AppState>) -> Html<String> {
             continue;
         }
         if let Some(due) = ch.due_at {
-            let occs = recurrence::expand_occurrences(
-                due, ch.cron.as_deref(), ch.interval_secs, from, to,
-            );
-            if !occs.is_empty() {
+            if due >= from && due < to {
                 today_chores.push(TodayItem {
                     id: ch.id,
                     label: ch.title.clone(),
@@ -158,6 +176,21 @@ async fn index(State(state): State<AppState>) -> Html<String> {
     Html(html)
 }
 
+/// View model for a recurring chore definition in the template.
+#[derive(Serialize)]
+struct RecurringChoreView {
+    def_id: i64,
+    /// The instance ID to mark done (if there's a pending instance).
+    instance_id: Option<i64>,
+    title: String,
+    owner: Option<String>,
+    frequency: String,
+    estimate_minutes: Option<i64>,
+    next_due: Option<String>,
+    followup_count: usize,
+}
+
+/// View model for a one-time chore instance in the template.
 #[derive(Serialize)]
 struct ChoreView {
     id: i64,
@@ -165,37 +198,46 @@ struct ChoreView {
     owner: Option<String>,
     due_at: Option<String>,
     done: bool,
-    frequency: String,
     estimate_minutes: Option<i64>,
     followup_count: usize,
 }
 
 async fn chores_page(State(state): State<AppState>) -> Html<String> {
-    let all = state.db.list_all_chores().unwrap_or_default();
-
-    let (rec_tagged, once_tagged): (Vec<_>, Vec<_>) = all
-        .into_iter()
-        .map(|c| {
-            let freq = recurrence::cron_to_human(c.cron.as_deref(), c.interval_secs);
-            let is_recurring = c.cron.is_some() || c.interval_secs.is_some();
-            (
-                ChoreView {
-                    id: c.id,
-                    title: c.title.clone(),
-                    owner: c.owner.clone(),
-                    due_at: c.due_at.map(|d| d.format("%Y-%m-%d").to_string()),
-                    done: c.done,
-                    frequency: freq,
-                    estimate_minutes: c.estimate_minutes,
-                    followup_count: c.followups.as_ref().map_or(0, |f| f.len()),
-                },
-                is_recurring,
-            )
+    // Recurring chores → from definitions
+    let defs = state.db.list_chore_definitions().unwrap_or_default();
+    let recurring: Vec<RecurringChoreView> = defs
+        .iter()
+        .map(|d| {
+            let pending = state.db.get_pending_instance(d.id).ok().flatten();
+            RecurringChoreView {
+                def_id: d.id,
+                instance_id: pending.as_ref().map(|i| i.id),
+                title: d.title.clone(),
+                owner: d.owner.clone(),
+                frequency: recurrence::cron_to_human(d.cron.as_deref(), d.interval_secs),
+                estimate_minutes: d.estimate_minutes,
+                next_due: pending.and_then(|i| i.due_at).map(|d| d.format("%Y-%m-%d").to_string()),
+                followup_count: d.followups.as_ref().map_or(0, |f| f.len()),
+            }
         })
-        .partition(|(_, is_rec)| *is_rec);
+        .collect();
 
-    let recurring: Vec<ChoreView> = rec_tagged.into_iter().map(|(cv, _)| cv).collect();
-    let one_time: Vec<ChoreView> = once_tagged.into_iter().map(|(cv, _)| cv).collect();
+    // One-time chores → from chores table (no definition)
+    let one_time: Vec<ChoreView> = state
+        .db
+        .list_onetime_chores()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| ChoreView {
+            id: c.id,
+            title: c.title,
+            owner: c.owner,
+            due_at: c.due_at.map(|d| d.format("%Y-%m-%d").to_string()),
+            done: c.done,
+            estimate_minutes: c.estimate_minutes,
+            followup_count: c.followups.as_ref().map_or(0, |f| f.len()),
+        })
+        .collect();
 
     let mut ctx = Context::new();
     ctx.insert("recurring", &recurring);
@@ -223,12 +265,12 @@ async fn create_chore(
     Form(form): Form<CreateChoreForm>,
 ) -> Redirect {
     let owner = form.owner.as_deref().filter(|s| !s.is_empty());
+    let estimate = form.estimate_minutes.filter(|&m| m > 0);
 
     // Convert frequency picker → cron / interval_secs
     let (cron, interval_secs) = match form.frequency.as_deref() {
         Some("daily") => (Some("0 9 * * *".to_string()), None),
         Some("weekly") => {
-            // Use JS-generated cron if present, otherwise default to Monday
             let c = form
                 .cron
                 .as_deref()
@@ -236,40 +278,85 @@ async fn create_chore(
                 .unwrap_or("0 9 * * 1");
             (Some(c.to_string()), None)
         }
-        Some("biweekly") => {
-            // Cron can't do "every other week" — use interval_secs
-            (None, Some(1_209_600i64))
-        }
+        Some("biweekly") => (None, Some(1_209_600i64)),
         Some("monthly") => (Some("0 9 1 * *".to_string()), None),
         _ => (None, None), // "once" or missing
     };
 
-    // Parse optional due_date
-    let due_at = form
-        .due_date
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-        .map(|nd| {
-            Utc.from_utc_datetime(&nd.and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap()))
-        });
+    let is_recurring = cron.is_some() || interval_secs.is_some();
 
-    let estimate = form.estimate_minutes.filter(|&m| m > 0);
-    let _ = state.db.create_chore(
-        &form.title,
-        owner,
-        interval_secs,
-        cron.as_deref(),
-        estimate,
-        None, // followups — only via MCP
-        due_at,
-        0,
-    );
+    if is_recurring {
+        // Create a definition (which spawns the first instance automatically)
+        let _ = state.db.create_chore_definition(
+            &form.title,
+            owner,
+            interval_secs,
+            cron.as_deref(),
+            estimate,
+            None, // followups — only via MCP
+            0,
+        );
+    } else {
+        // One-time chore
+        let due_at = form
+            .due_date
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+            .map(|nd| {
+                Utc.from_utc_datetime(&nd.and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap()))
+            });
+        let _ = state.db.create_chore(
+            &form.title,
+            owner,
+            estimate,
+            None, // followups — only via MCP
+            due_at,
+            0,
+        );
+    }
+
     Redirect::to("/chores")
 }
 
-async fn mark_done(State(state): State<AppState>, Path(id): Path<i64>) -> Redirect {
+#[derive(Deserialize)]
+pub struct DoneForm {
+    return_to: Option<String>,
+}
+
+async fn mark_done(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Form(form): Form<DoneForm>,
+) -> Redirect {
     let _ = state.db.complete_chore(id);
+    let dest = form
+        .return_to
+        .as_deref()
+        .filter(|s| !s.is_empty() && s.starts_with('/'))
+        .unwrap_or("/chores");
+    Redirect::to(dest)
+}
+
+async fn postpone_chore(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+    Form(form): Form<DoneForm>,
+) -> Redirect {
+    let _ = state.db.postpone_chore(id);
+    let dest = form
+        .return_to
+        .as_deref()
+        .filter(|s| !s.is_empty() && s.starts_with('/'))
+        .unwrap_or("/chores");
+    Redirect::to(dest)
+}
+
+async fn delete_chore_definition(
+    State(state): State<AppState>,
+    Path(id): Path<i64>,
+) -> Redirect {
+    let _ = state.db.delete_chore_definition(id);
     Redirect::to("/chores")
 }
 
@@ -442,10 +529,9 @@ async fn calendar_page(
 
     // Fetch all items and expand recurrence
     let all_events = state.db.list_all_events().unwrap_or_default();
-    let chores = state.db.list_all_chores().unwrap_or_default();
     let reminders = state.db.list_all_reminders().unwrap_or_default();
 
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashSet};
     let mut items_by_date: BTreeMap<String, Vec<CalendarItem>> = BTreeMap::new();
 
     for ev in &all_events {
@@ -462,18 +548,40 @@ async fn calendar_page(
         }
     }
 
+    // Chores: show concrete pending instances
+    let chores = state.db.list_all_chores().unwrap_or_default();
+    let mut covered_dates_by_def: HashSet<(i64, String)> = HashSet::new();
     for ch in &chores {
         if ch.done { continue; }
         if let Some(due) = ch.due_at {
-            let occs = recurrence::expand_occurrences(
-                due, ch.cron.as_deref(), ch.interval_secs, from_utc, to_utc,
-            );
-            for occ in occs {
-                let key = occ.date_naive().format("%Y-%m-%d").to_string();
+            let key = due.date_naive().format("%Y-%m-%d").to_string();
+            if due >= from_utc && due < to_utc {
+                if let Some(def_id) = ch.definition_id {
+                    covered_dates_by_def.insert((def_id, key.clone()));
+                }
                 items_by_date.entry(key).or_default().push(CalendarItem {
                     label: ch.title.clone(),
                     kind: "chore".into(),
                     id: ch.id,
+                });
+            }
+        }
+    }
+
+    // Also expand definitions for future dates not yet covered by an instance
+    let defs = state.db.list_chore_definitions().unwrap_or_default();
+    for def in &defs {
+        let now = Utc::now();
+        let occs = recurrence::expand_occurrences(
+            now, def.cron.as_deref(), def.interval_secs, from_utc, to_utc,
+        );
+        for occ in occs {
+            let key = occ.date_naive().format("%Y-%m-%d").to_string();
+            if !covered_dates_by_def.contains(&(def.id, key.clone())) {
+                items_by_date.entry(key).or_default().push(CalendarItem {
+                    label: def.title.clone(),
+                    kind: "chore".into(),
+                    id: def.id,
                 });
             }
         }

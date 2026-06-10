@@ -13,7 +13,7 @@ Built in Rust with [Tokio](https://tokio.rs), [Axum](https://github.com/tokio-rs
 - **Arbitrary lists** — create any named list (packing, movies, …) and add/remove/check items.
 - **Daily digest** — automatic Telegram message every morning at 08:00 with pending chores, upcoming reminders, and the day's events.
 - **AI assistant** — `/ai` command routes natural-language requests through OpenRouter (free-tier models supported) with full tool-calling access to every feature above.
-- **MCP server** — `bonjourdijon mcp` exposes all functionality over JSON-RPC on stdio, so AI agents can manage your household data directly.
+- **MCP server** — JSON-RPC interface for AI agents. Available over stdio (`bonjourdijon mcp`) and over HTTP (`POST /mcp`) when running the web server.
 - **Web UI** — server-rendered pages (Tera templates + minimal CSS) with a dashboard, chore manager, grocery list, calendar view, and list browser.
 
 ## Quick start
@@ -40,6 +40,34 @@ Run the MCP server for AI agent integrations (reads/writes JSON-RPC over stdio):
 
 ```bash
 cargo run -- mcp
+```
+
+The MCP protocol is also available over HTTP at `POST /mcp` when the web server is running (see below).
+
+### Docker
+
+The easiest way to run BonjourDijon. The single container serves both the web UI and the MCP endpoint (`POST /mcp`).
+
+```bash
+# 1. Clone & configure
+git clone https://github.com/your-user/bonjourdijon.git
+cd bonjourdijon
+
+# 2. Set your secrets in docker-compose.yml (or pass them via .env)
+#    At minimum, uncomment TELOXIDE_TOKEN if you want the Telegram bot.
+
+# 3. Start
+docker compose up -d
+```
+
+The web UI is at **http://localhost:3000** and the MCP endpoint is at **http://localhost:3000/mcp**.
+
+To pass secrets via a `.env` file instead of editing `docker-compose.yml`:
+
+```bash
+echo 'TELOXIDE_TOKEN=123456:ABC-DEF...' >> .env
+echo 'OPENROUTER_API_KEY=sk-or-v1-...' >> .env
+docker compose up -d
 ```
 
 ## Configuration

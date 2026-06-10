@@ -63,13 +63,16 @@
                 <td>{{ c.owner | default(value="-") }}</td>
                 <td><span class="tag periodic">🔁 {{ c.frequency }}</span></td>
                 <td>{% if c.estimate_minutes %}<span class="tag">⏱ {{ c.estimate_minutes }}min</span>{% else %}-{% endif %}</td>
-                <td>{% if c.due_at %}{{ c.due_at }}{% else %}-{% endif %}</td>
+                <td>{% if c.next_due %}{{ c.next_due }}{% else %}-{% endif %}</td>
                 <td>
-                    {% if not c.done %}
-                    <form method="POST" action="/chores/{{ c.id }}/done" style="display:inline">
+                    {% if c.instance_id %}
+                    <form method="POST" action="/chores/{{ c.instance_id }}/done" style="display:inline">
                         <button type="submit" class="btn btn-small">Done ✓</button>
                     </form>
                     {% endif %}
+                    <form method="POST" action="/chores/definitions/{{ c.def_id }}/delete" style="display:inline; margin-left: 0.25rem;">
+                        <button type="submit" class="btn btn-small btn-danger" onclick="return confirm('Delete this recurring chore?')">✕</button>
+                    </form>
                 </td>
             </tr>
             {% endfor %}
