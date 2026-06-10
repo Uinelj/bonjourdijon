@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}BonjourDijon{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav>
+        <div class="nav-inner">
+            <a href="/" class="logo">🧹 BonjourDijon</a>
+            <div class="nav-links">
+                <a href="/">Dashboard</a>
+                <a href="/chores">Chores</a>
+                <a href="/groceries">Groceries</a>
+                <a href="/lists">Lists</a>
+                <a href="/calendar">Calendar</a>
+            </div>
+        </div>
+    </nav>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+    <footer>
+        <p>BonjourDijon — keeping things tidy, one chore at a time ✨</p>
+    </footer>
+</body>
+</html>

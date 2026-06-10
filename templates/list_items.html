@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+
+{% block title %}{{ list_name }} — BonjourDijon{% endblock %}
+
+{% block content %}
+<h1>📝 {{ list_name }}</h1>
+
+<section class="card">
+    <h2>Add item</h2>
+    <form method="POST" action="/lists/{{ list_name }}" class="inline-form">
+        <input type="text" name="item" placeholder="Add an item..." required>
+        <button type="submit" class="btn">Add</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Items</h2>
+    {% if items | length == 0 %}
+        <p class="empty">This list is empty.</p>
+    {% else %}
+    <ul class="item-list">
+        {% for item in items %}
+        <li class="list-item-row">
+            <span class="item-title">{{ item.item }}</span>
+            {% if item.added_by %}<span class="tag">@{{ item.added_by }}</span>{% endif %}
+            <form method="POST" action="/lists/{{ list_name }}/{{ item.id }}/remove" style="display:inline">
+                <button type="submit" class="btn btn-small btn-danger">Remove</button>
+            </form>
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+</section>
+
+<a href="/lists" class="btn">← Back to lists</a>
+{% endblock %}

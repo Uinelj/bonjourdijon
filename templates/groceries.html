@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+
+{% block title %}Groceries — BonjourDijon{% endblock %}
+
+{% block content %}
+<h1>🛒 Grocery List</h1>
+
+<section class="card">
+    <h2>Add an item</h2>
+    <form method="POST" action="/groceries" class="inline-form">
+        <input type="text" name="item" placeholder="What to buy?" required>
+        <input type="text" name="where_to_buy" placeholder="Store (optional)">
+        <div class="prio-buttons">
+            <label class="prio-btn prio-low">
+                <input type="radio" name="priority" value="1"> Low
+            </label>
+            <label class="prio-btn prio-mid">
+                <input type="radio" name="priority" value="3" checked> Mid
+            </label>
+            <label class="prio-btn prio-high">
+                <input type="radio" name="priority" value="5"> High
+            </label>
+        </div>
+        <button type="submit" class="btn">Add</button>
+    </form>
+</section>
+
+<section class="card">
+    <h2>Shopping List</h2>
+    {% if items | length == 0 %}
+        <p class="empty">Nothing to buy — pantry is stocked! 🎉</p>
+    {% else %}
+    <table>
+        <thead>
+            <tr>
+                <th>Item</th>
+                <th>Where</th>
+                <th>Priority</th>
+                <th>Status</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for g in items %}
+            <tr class="{% if g.bought %}done-row{% endif %}">
+                <td>{{ g.item }}</td>
+                <td>{{ g.where_to_buy | default(value="-") }}</td>
+                <td>
+                    {% if g.priority >= 4 %}
+                        <span class="prio-pill prio-high">High</span>
+                    {% elif g.priority >= 2 %}
+                        <span class="prio-pill prio-mid">Mid</span>
+                    {% else %}
+                        <span class="prio-pill prio-low">Low</span>
+                    {% endif %}
+                </td>
+                <td>{% if g.bought %}✅{% else %}🛒{% endif %}</td>
+                <td>
+                    {% if not g.bought %}
+                    <form method="POST" action="/groceries/{{ g.id }}/bought" style="display:inline">
+                        <button type="submit" class="btn btn-small">Bought ✓</button>
+                    </form>
+                    {% endif %}
+                    <form method="POST" action="/groceries/{{ g.id }}/remove" style="display:inline">
+                        <button type="submit" class="btn btn-small btn-danger">✕</button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+</section>
+{% endblock %}

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Lists — BonjourDijon{% endblock %}
+
+{% block content %}
+<h1>📝 Lists</h1>
+
+<section class="card">
+    <h2>Create a new list</h2>
+    <p>Add an item to a new list name and it'll appear here automatically.</p>
+</section>
+
+{% if list_names | length == 0 %}
+<section class="card">
+    <p class="empty">No lists yet. Create one from the Telegram bot with <code>/add listname item</code></p>
+</section>
+{% else %}
+<section class="card">
+    <h2>Your Lists</h2>
+    <ul class="item-list">
+        {% for name in list_names %}
+        <li><a href="/lists/{{ name }}" class="list-link">📋 {{ name }}</a></li>
+        {% endfor %}
+    </ul>
+</section>
+{% endif %}
+{% endblock %}
