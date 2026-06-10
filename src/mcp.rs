@@ -112,396 +112,446 @@ fn handle_initialize(id: &Value) -> Value {
 //  Tool definitions — the complete MCP interface for BonjourDijon
 // ═══════════════════════════════════════════════════════════════════════
 
+/// Return the array of MCP tool schema objects (without JSON-RPC wrapping).
+/// Used by the AI module to build OpenAI-format function definitions.
+pub fn get_tools_json() -> Value {
+    json!([
+        // ── Chores ─────────────────────────────────────────
+        {
+            "name": "get_chore",
+            "description": "Get a single chore by ID.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Chore ID" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "list_chores",
+            "description": "List all chores. Returns an array of chore objects with id, title, owner, interval_secs, due_at, done, chat_id, created_at.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
+            "name": "create_chore",
+            "description": "Create a new chore. Supports followup chains: when a chore with followups is completed, the first followup step is automatically spawned as a new chore due after its delay. Great for multi-step tasks like laundry (load machine → hang dry → fold & put away).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Title of the chore" },
+                    "owner": { "type": "string", "description": "Owner username (optional)" },
+                    "due_at": { "type": "string", "description": "Due date in YYYY-MM-DD or RFC3339 format (optional)" },
+                    "interval_secs": { "type": "integer", "description": "Repeat interval in seconds for periodic chores (optional)" },
+                    "cron": { "type": "string", "description": "Cron expression (5-field: min hour dom month dow) for calendar-aligned recurrence. E.g. '0 9 * * 0' = every Sunday 9am. Prefer over interval_secs for day-of-week schedules. (optional)" },
+                    "estimate_minutes": { "type": "integer", "description": "Estimated time to complete in minutes (optional). E.g. 15 for a quick task, 60 for an hour-long chore." },
+                    "followups": {
+                        "type": "array",
+                        "description": "Chain of followup steps. Each step is spawned as a new chore when the previous one is completed. E.g. [{\"title\": \"Hang laundry\", \"delay_secs\": 5400, \"estimate_minutes\": 10}, {\"title\": \"Fold & put away\", \"delay_secs\": 172800, \"estimate_minutes\": 10}]",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": { "type": "string", "description": "Title of the followup step" },
+                                "delay_secs": { "type": "integer", "description": "Seconds after completing the previous step before this one is due" },
+                                "estimate_minutes": { "type": "integer", "description": "Estimated minutes (optional)" }
+                            },
+                            "required": ["title", "delay_secs"]
+                        }
+                    }
+                },
+                "required": ["title"]
+            }
+        },
+        {
+            "name": "complete_chore",
+            "description": "Mark a chore as done.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Chore ID to mark done" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "assign_chore",
+            "description": "Assign a chore to a user.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Chore ID" },
+                    "owner": { "type": "string", "description": "Username to assign to" }
+                },
+                "required": ["id", "owner"]
+            }
+        },
+        {
+            "name": "delete_chore",
+            "description": "Delete a chore by ID.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Chore ID to delete" }
+                },
+                "required": ["id"]
+            }
+        },
+
+        // ── Reminders ──────────────────────────────────────
+        {
+            "name": "get_reminder",
+            "description": "Get a single reminder by ID.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Reminder ID" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "list_reminders",
+            "description": "List all active (unfired) reminders. Returns id, message, remind_at, interval_secs (if periodic), etc.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
+            "name": "create_reminder",
+            "description": "Create a reminder using natural language. Supports one-shot ('in 2 hours do laundry', 'vacuum before friday') and periodic ('every 1 week check stock', 'every 2 days water plants').",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "text": { "type": "string", "description": "Natural language reminder text. Use 'every N unit message' for periodic reminders." },
+                    "chat_id": { "type": "integer", "description": "Telegram chat ID for delivery (optional, default 0)" }
+                },
+                "required": ["text"]
+            }
+        },
+        {
+            "name": "delete_reminder",
+            "description": "Delete a reminder by ID.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Reminder ID to delete" }
+                },
+                "required": ["id"]
+            }
+        },
+
+        // ── Lists ──────────────────────────────────────────
+        {
+            "name": "list_lists",
+            "description": "List all list names (e.g. 'groceries', 'todo').",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
+            "name": "list_items",
+            "description": "List all items in a named list.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "list_name": { "type": "string", "description": "Name of the list" }
+                },
+                "required": ["list_name"]
+            }
+        },
+        {
+            "name": "add_item",
+            "description": "Add an item to a named list. Creates the list if it doesn't exist.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "list_name": { "type": "string", "description": "Name of the list" },
+                    "item": { "type": "string", "description": "Item text to add" }
+                },
+                "required": ["list_name", "item"]
+            }
+        },
+        {
+            "name": "remove_item",
+            "description": "Remove an item from a list by item ID.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Item ID to remove" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "check_item",
+            "description": "Check or uncheck a list item.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Item ID" },
+                    "checked": { "type": "boolean", "description": "true to check, false to uncheck" }
+                },
+                "required": ["id", "checked"]
+            }
+        },
+
+        // ── Events / Calendar ──────────────────────────────
+        {
+            "name": "get_event",
+            "description": "Get a single event by ID.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Event ID" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "list_events",
+            "description": "List all calendar events, ordered by start date.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
+            "name": "get_events_today",
+            "description": "Get all events happening today (UTC).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
+            "name": "get_events_range",
+            "description": "Get events within a date range.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "Start date (YYYY-MM-DD or RFC3339)" },
+                    "to": { "type": "string", "description": "End date (YYYY-MM-DD or RFC3339)" }
+                },
+                "required": ["from", "to"]
+            }
+        },
+        {
+            "name": "create_event",
+            "description": "Create a calendar event. Set cron or interval_secs for recurring events.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Event title" },
+                    "starts_at": { "type": "string", "description": "Start date/time in YYYY-MM-DD or RFC3339 format" },
+                    "ends_at": { "type": "string", "description": "End date/time (optional)" },
+                    "description": { "type": "string", "description": "Event description (optional)" },
+                    "interval_secs": { "type": "integer", "description": "Recurrence interval in seconds (optional). 86400=daily, 604800=weekly, 2592000≈monthly." },
+                    "cron": { "type": "string", "description": "Cron expression (5-field: min hour dom month dow) for calendar-aligned recurrence. E.g. '0 9 * * 1' = every Monday 9am. Prefer over interval_secs for day-of-week schedules. (optional)" },
+                    "chat_id": { "type": "integer", "description": "Telegram chat ID (optional, default 0)" }
+                },
+                "required": ["title", "starts_at"]
+            }
+        },
+        {
+            "name": "update_event",
+            "description": "Update an existing event. Only provided fields are changed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Event ID to update" },
+                    "title": { "type": "string", "description": "New title (optional)" },
+                    "description": { "type": "string", "description": "New description (optional)" },
+                    "starts_at": { "type": "string", "description": "New start date/time (optional)" },
+                    "ends_at": { "type": ["string", "null"], "description": "New end date/time, or null to clear (optional)" },
+                    "interval_secs": { "type": ["integer", "null"], "description": "New recurrence interval, or null to make one-off (optional)" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "delete_event",
+            "description": "Delete a calendar event by ID.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Event ID to delete" }
+                },
+                "required": ["id"]
+            }
+        },
+
+        // ── Groceries ───────────────────────────────────────
+        {
+            "name": "get_grocery",
+            "description": "Get a single grocery item by ID.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Grocery item ID" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "list_groceries",
+            "description": "List grocery items. By default only shows items still to buy (not bought). Set include_bought=true to see all.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "include_bought": { "type": "boolean", "description": "Include already-bought items (default: false)" }
+                },
+                "required": []
+            }
+        },
+        {
+            "name": "add_grocery",
+            "description": "Add an item to the grocery list. Three columns: what to buy, where to buy it, and how urgent (1-5).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "item": { "type": "string", "description": "What to buy (e.g. 'Olive oil', 'Comté cheese')" },
+                    "where_to_buy": { "type": "string", "description": "Store name or geo coordinates (e.g. 'Carrefour', '47.3220,5.0415'). Optional." },
+                    "priority": { "type": "integer", "description": "Urgency 1 (low) to 5 (critical). Default: 3." }
+                },
+                "required": ["item"]
+            }
+        },
+        {
+            "name": "update_grocery",
+            "description": "Update a grocery item. Only provided fields are changed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Grocery item ID" },
+                    "item": { "type": "string", "description": "New item name (optional)" },
+                    "where_to_buy": { "type": ["string", "null"], "description": "New store/location, or null to clear (optional)" },
+                    "priority": { "type": "integer", "description": "New priority 1-5 (optional)" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "mark_grocery_bought",
+            "description": "Mark a grocery item as bought (or un-bought).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Grocery item ID" },
+                    "bought": { "type": "boolean", "description": "true = bought, false = still needed. Default: true." }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "delete_grocery",
+            "description": "Delete a grocery item by ID.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Grocery item ID to delete" }
+                },
+                "required": ["id"]
+            }
+        },
+        {
+            "name": "clear_bought_groceries",
+            "description": "Remove all bought grocery items (clean up the list after a shopping trip).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+
+        // ── Agenda / Dashboard ─────────────────────────────
+        {
+            "name": "get_agenda",
+            "description": "Get today's agenda: events happening today, pending chores (due today or overdue), and upcoming reminders (firing today). A single-call dashboard.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
+            "name": "whats_on_our_plate",
+            "description": "Comprehensive overview of everything that needs doing. Returns: all pending chores (with due dates, owners, time estimates for scheduling), all grocery items still to buy (grouped by store/location for efficient shopping routes), today's events, upcoming reminders, and scheduling hints. Designed for an agent to plan an optimal sequence — e.g. start laundry first because it runs unattended, then shop at the nearest store for urgent items, etc.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+    ])
+}
+
 fn handle_tools_list(id: &Value) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,
         "result": {
-            "tools": [
-                // ── Chores ─────────────────────────────────────────
-                {
-                    "name": "get_chore",
-                    "description": "Get a single chore by ID.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Chore ID" }
-                        },
-                        "required": ["id"]
-                    }
-                },
-                {
-                    "name": "list_chores",
-                    "description": "List all chores. Returns an array of chore objects with id, title, owner, interval_secs, due_at, done, chat_id, created_at.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                {
-                    "name": "create_chore",
-                    "description": "Create a new chore. Supports followup chains: when a chore with followups is completed, the first followup step is automatically spawned as a new chore due after its delay. Great for multi-step tasks like laundry (load machine → hang dry → fold & put away).",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "title": { "type": "string", "description": "Title of the chore" },
-                            "owner": { "type": "string", "description": "Owner username (optional)" },
-                            "due_at": { "type": "string", "description": "Due date in YYYY-MM-DD or RFC3339 format (optional)" },
-                            "interval_secs": { "type": "integer", "description": "Repeat interval in seconds for periodic chores (optional)" },
-                            "cron": { "type": "string", "description": "Cron expression (5-field: min hour dom month dow) for calendar-aligned recurrence. E.g. '0 9 * * 0' = every Sunday 9am. Prefer over interval_secs for day-of-week schedules. (optional)" },
-                            "estimate_minutes": { "type": "integer", "description": "Estimated time to complete in minutes (optional). E.g. 15 for a quick task, 60 for an hour-long chore." },
-                            "followups": {
-                                "type": "array",
-                                "description": "Chain of followup steps. Each step is spawned as a new chore when the previous one is completed. E.g. [{\"title\": \"Hang laundry\", \"delay_secs\": 5400, \"estimate_minutes\": 10}, {\"title\": \"Fold & put away\", \"delay_secs\": 172800, \"estimate_minutes\": 10}]",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "title": { "type": "string", "description": "Title of the followup step" },
-                                        "delay_secs": { "type": "integer", "description": "Seconds after completing the previous step before this one is due" },
-                                        "estimate_minutes": { "type": "integer", "description": "Estimated minutes (optional)" }
-                                    },
-                                    "required": ["title", "delay_secs"]
-                                }
-                            }
-                        },
-                        "required": ["title"]
-                    }
-                },
-                {
-                    "name": "complete_chore",
-                    "description": "Mark a chore as done.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Chore ID to mark done" }
-                        },
-                        "required": ["id"]
-                    }
-                },
-                {
-                    "name": "assign_chore",
-                    "description": "Assign a chore to a user.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Chore ID" },
-                            "owner": { "type": "string", "description": "Username to assign to" }
-                        },
-                        "required": ["id", "owner"]
-                    }
-                },
-                {
-                    "name": "delete_chore",
-                    "description": "Delete a chore by ID.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Chore ID to delete" }
-                        },
-                        "required": ["id"]
-                    }
-                },
-
-                // ── Reminders ──────────────────────────────────────
-                {
-                    "name": "get_reminder",
-                    "description": "Get a single reminder by ID.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Reminder ID" }
-                        },
-                        "required": ["id"]
-                    }
-                },
-                {
-                    "name": "list_reminders",
-                    "description": "List all active (unfired) reminders. Returns id, message, remind_at, interval_secs (if periodic), etc.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                {
-                    "name": "create_reminder",
-                    "description": "Create a reminder using natural language. Supports one-shot ('in 2 hours do laundry', 'vacuum before friday') and periodic ('every 1 week check stock', 'every 2 days water plants').",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "text": { "type": "string", "description": "Natural language reminder text. Use 'every N unit message' for periodic reminders." },
-                            "chat_id": { "type": "integer", "description": "Telegram chat ID for delivery (optional, default 0)" }
-                        },
-                        "required": ["text"]
-                    }
-                },
-                {
-                    "name": "delete_reminder",
-                    "description": "Delete a reminder by ID.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Reminder ID to delete" }
-                        },
-                        "required": ["id"]
-                    }
-                },
-
-                // ── Lists ──────────────────────────────────────────
-                {
-                    "name": "list_lists",
-                    "description": "List all list names (e.g. 'groceries', 'todo').",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                {
-                    "name": "list_items",
-                    "description": "List all items in a named list.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "list_name": { "type": "string", "description": "Name of the list" }
-                        },
-                        "required": ["list_name"]
-                    }
-                },
-                {
-                    "name": "add_item",
-                    "description": "Add an item to a named list. Creates the list if it doesn't exist.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "list_name": { "type": "string", "description": "Name of the list" },
-                            "item": { "type": "string", "description": "Item text to add" }
-                        },
-                        "required": ["list_name", "item"]
-                    }
-                },
-                {
-                    "name": "remove_item",
-                    "description": "Remove an item from a list by item ID.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Item ID to remove" }
-                        },
-                        "required": ["id"]
-                    }
-                },
-                {
-                    "name": "check_item",
-                    "description": "Check or uncheck a list item.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Item ID" },
-                            "checked": { "type": "boolean", "description": "true to check, false to uncheck" }
-                        },
-                        "required": ["id", "checked"]
-                    }
-                },
-
-                // ── Events / Calendar ──────────────────────────────
-                {
-                    "name": "get_event",
-                    "description": "Get a single event by ID.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Event ID" }
-                        },
-                        "required": ["id"]
-                    }
-                },
-                {
-                    "name": "list_events",
-                    "description": "List all calendar events, ordered by start date.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                {
-                    "name": "get_events_today",
-                    "description": "Get all events happening today (UTC).",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                {
-                    "name": "get_events_range",
-                    "description": "Get events within a date range.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "from": { "type": "string", "description": "Start date (YYYY-MM-DD or RFC3339)" },
-                            "to": { "type": "string", "description": "End date (YYYY-MM-DD or RFC3339)" }
-                        },
-                        "required": ["from", "to"]
-                    }
-                },
-                {
-                    "name": "create_event",
-                    "description": "Create a calendar event. Set cron or interval_secs for recurring events.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "title": { "type": "string", "description": "Event title" },
-                            "starts_at": { "type": "string", "description": "Start date/time in YYYY-MM-DD or RFC3339 format" },
-                            "ends_at": { "type": "string", "description": "End date/time (optional)" },
-                            "description": { "type": "string", "description": "Event description (optional)" },
-                            "interval_secs": { "type": "integer", "description": "Recurrence interval in seconds (optional). 86400=daily, 604800=weekly, 2592000≈monthly." },
-                            "cron": { "type": "string", "description": "Cron expression (5-field: min hour dom month dow) for calendar-aligned recurrence. E.g. '0 9 * * 1' = every Monday 9am. Prefer over interval_secs for day-of-week schedules. (optional)" },
-                            "chat_id": { "type": "integer", "description": "Telegram chat ID (optional, default 0)" }
-                        },
-                        "required": ["title", "starts_at"]
-                    }
-                },
-                {
-                    "name": "update_event",
-                    "description": "Update an existing event. Only provided fields are changed.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Event ID to update" },
-                            "title": { "type": "string", "description": "New title (optional)" },
-                            "description": { "type": "string", "description": "New description (optional)" },
-                            "starts_at": { "type": "string", "description": "New start date/time (optional)" },
-                            "ends_at": { "type": ["string", "null"], "description": "New end date/time, or null to clear (optional)" },
-                            "interval_secs": { "type": ["integer", "null"], "description": "New recurrence interval, or null to make one-off (optional)" }
-                        },
-                        "required": ["id"]
-                    }
-                },
-                {
-                    "name": "delete_event",
-                    "description": "Delete a calendar event by ID.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Event ID to delete" }
-                        },
-                        "required": ["id"]
-                    }
-                },
-
-                // ── Groceries ───────────────────────────────────────
-                {
-                    "name": "get_grocery",
-                    "description": "Get a single grocery item by ID.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Grocery item ID" }
-                        },
-                        "required": ["id"]
-                    }
-                },
-                {
-                    "name": "list_groceries",
-                    "description": "List grocery items. By default only shows items still to buy (not bought). Set include_bought=true to see all.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "include_bought": { "type": "boolean", "description": "Include already-bought items (default: false)" }
-                        },
-                        "required": []
-                    }
-                },
-                {
-                    "name": "add_grocery",
-                    "description": "Add an item to the grocery list. Three columns: what to buy, where to buy it, and how urgent (1-5).",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "item": { "type": "string", "description": "What to buy (e.g. 'Olive oil', 'Comté cheese')" },
-                            "where_to_buy": { "type": "string", "description": "Store name or geo coordinates (e.g. 'Carrefour', '47.3220,5.0415'). Optional." },
-                            "priority": { "type": "integer", "description": "Urgency 1 (low) to 5 (critical). Default: 3." }
-                        },
-                        "required": ["item"]
-                    }
-                },
-                {
-                    "name": "update_grocery",
-                    "description": "Update a grocery item. Only provided fields are changed.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Grocery item ID" },
-                            "item": { "type": "string", "description": "New item name (optional)" },
-                            "where_to_buy": { "type": ["string", "null"], "description": "New store/location, or null to clear (optional)" },
-                            "priority": { "type": "integer", "description": "New priority 1-5 (optional)" }
-                        },
-                        "required": ["id"]
-                    }
-                },
-                {
-                    "name": "mark_grocery_bought",
-                    "description": "Mark a grocery item as bought (or un-bought).",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Grocery item ID" },
-                            "bought": { "type": "boolean", "description": "true = bought, false = still needed. Default: true." }
-                        },
-                        "required": ["id"]
-                    }
-                },
-                {
-                    "name": "delete_grocery",
-                    "description": "Delete a grocery item by ID.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {
-                            "id": { "type": "integer", "description": "Grocery item ID to delete" }
-                        },
-                        "required": ["id"]
-                    }
-                },
-                {
-                    "name": "clear_bought_groceries",
-                    "description": "Remove all bought grocery items (clean up the list after a shopping trip).",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-
-                // ── Agenda / Dashboard ─────────────────────────────
-                {
-                    "name": "get_agenda",
-                    "description": "Get today's agenda: events happening today, pending chores (due today or overdue), and upcoming reminders (firing today). A single-call dashboard.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                },
-                {
-                    "name": "whats_on_our_plate",
-                    "description": "Comprehensive overview of everything that needs doing. Returns: all pending chores (with due dates, owners, time estimates for scheduling), all grocery items still to buy (grouped by store/location for efficient shopping routes), today's events, upcoming reminders, and scheduling hints. Designed for an agent to plan an optimal sequence — e.g. start laundry first because it runs unattended, then shop at the nearest store for urgent items, etc.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-            ]
+            "tools": get_tools_json()
         }
     })
 }
-
 // ═══════════════════════════════════════════════════════════════════════
 //  Tool dispatch
 // ═══════════════════════════════════════════════════════════════════════
+
+/// Execute a tool by name with the given arguments.
+/// Public so the AI module can call tools directly.
+pub fn call_tool(name: &str, arguments: &Value, db: &Db) -> Result<String, String> {
+    match name {
+        // Chores
+        "get_chore" => tool_get_chore(db, arguments),
+        "list_chores" => tool_list_chores(db),
+        "create_chore" => tool_create_chore(db, arguments),
+        "complete_chore" => tool_complete_chore(db, arguments),
+        "assign_chore" => tool_assign_chore(db, arguments),
+        "delete_chore" => tool_delete_chore(db, arguments),
+        // Reminders
+        "get_reminder" => tool_get_reminder(db, arguments),
+        "list_reminders" => tool_list_reminders(db),
+        "create_reminder" => tool_create_reminder(db, arguments),
+        "delete_reminder" => tool_delete_reminder(db, arguments),
+        // Lists
+        "list_lists" => tool_list_lists(db),
+        "list_items" => tool_list_items(db, arguments),
+        "add_item" => tool_add_item(db, arguments),
+        "remove_item" => tool_remove_item(db, arguments),
+        "check_item" => tool_check_item(db, arguments),
+        // Events
+        "get_event" => tool_get_event(db, arguments),
+        "list_events" => tool_list_events(db),
+        "get_events_today" => tool_get_events_today(db),
+        "get_events_range" => tool_get_events_range(db, arguments),
+        "create_event" => tool_create_event(db, arguments),
+        "update_event" => tool_update_event(db, arguments),
+        "delete_event" => tool_delete_event(db, arguments),
+        // Groceries
+        "get_grocery" => tool_get_grocery(db, arguments),
+        "list_groceries" => tool_list_groceries(db, arguments),
+        "add_grocery" => tool_add_grocery(db, arguments),
+        "update_grocery" => tool_update_grocery(db, arguments),
+        "mark_grocery_bought" => tool_mark_grocery_bought(db, arguments),
+        "delete_grocery" => tool_delete_grocery(db, arguments),
+        "clear_bought_groceries" => tool_clear_bought_groceries(db),
+        // Dashboard
+        "get_agenda" => tool_get_agenda(db),
+        "whats_on_our_plate" => tool_whats_on_our_plate(db),
+        _ => Err(format!("Unknown tool: {name}")),
+    }
+}
 
 fn handle_tools_call(id: &Value, params: &Value, db: &Db) -> Value {
     let tool_name = params
@@ -510,46 +560,7 @@ fn handle_tools_call(id: &Value, params: &Value, db: &Db) -> Value {
         .unwrap_or("");
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
 
-    let result = match tool_name {
-        // Chores
-        "get_chore" => tool_get_chore(db, &arguments),
-        "list_chores" => tool_list_chores(db),
-        "create_chore" => tool_create_chore(db, &arguments),
-        "complete_chore" => tool_complete_chore(db, &arguments),
-        "assign_chore" => tool_assign_chore(db, &arguments),
-        "delete_chore" => tool_delete_chore(db, &arguments),
-        // Reminders
-        "get_reminder" => tool_get_reminder(db, &arguments),
-        "list_reminders" => tool_list_reminders(db),
-        "create_reminder" => tool_create_reminder(db, &arguments),
-        "delete_reminder" => tool_delete_reminder(db, &arguments),
-        // Lists
-        "list_lists" => tool_list_lists(db),
-        "list_items" => tool_list_items(db, &arguments),
-        "add_item" => tool_add_item(db, &arguments),
-        "remove_item" => tool_remove_item(db, &arguments),
-        "check_item" => tool_check_item(db, &arguments),
-        // Events
-        "get_event" => tool_get_event(db, &arguments),
-        "list_events" => tool_list_events(db),
-        "get_events_today" => tool_get_events_today(db),
-        "get_events_range" => tool_get_events_range(db, &arguments),
-        "create_event" => tool_create_event(db, &arguments),
-        "update_event" => tool_update_event(db, &arguments),
-        "delete_event" => tool_delete_event(db, &arguments),
-        // Groceries
-        "get_grocery" => tool_get_grocery(db, &arguments),
-        "list_groceries" => tool_list_groceries(db, &arguments),
-        "add_grocery" => tool_add_grocery(db, &arguments),
-        "update_grocery" => tool_update_grocery(db, &arguments),
-        "mark_grocery_bought" => tool_mark_grocery_bought(db, &arguments),
-        "delete_grocery" => tool_delete_grocery(db, &arguments),
-        "clear_bought_groceries" => tool_clear_bought_groceries(db),
-        // Dashboard
-        "get_agenda" => tool_get_agenda(db),
-        "whats_on_our_plate" => tool_whats_on_our_plate(db),
-        _ => Err(format!("Unknown tool: {tool_name}")),
-    };
+    let result = call_tool(tool_name, &arguments, db);
 
     match result {
         Ok(content) => json!({

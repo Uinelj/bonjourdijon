@@ -1,5 +1,6 @@
 #![recursion_limit = "256"]
 
+mod ai;
 mod bot;
 mod config;
 mod db;
@@ -126,9 +127,11 @@ async fn run_serve(db: Arc<db::Db>, cfg: &config::Config) {
         });
 
         let bot_db = db.clone();
+        let or_key = cfg.openrouter_api_key.clone();
+        let or_model = cfg.openrouter_model.clone();
         let bot_handle = tokio::spawn(async move {
             info!("Telegram bot started");
-            bot::run(bot, bot_db).await;
+            bot::run(bot, bot_db, or_key, or_model).await;
         });
 
         tokio::select! {

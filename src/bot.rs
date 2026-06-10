@@ -51,17 +51,24 @@ pub enum Command {
     Event(String),
     #[command(description = "list upcoming events")]
     Events,
+    #[command(description = "ask the AI assistant: /ai add eggs to groceries")]
+    Ai(String),
 }
 
-pub async fn run(bot: Bot, db: Arc<Db>) {
+pub async fn run(bot: Bot, db: Arc<Db>, openrouter_api_key: Option<String>, openrouter_model: String) {
     // Register bot profile & command menu in Telegram
     setup_bot_profile(&bot).await;
+
+    let or_key = Arc::new(openrouter_api_key);
+    let or_model = Arc::new(openrouter_model);
 
     let handler = Update::filter_message().filter_command::<Command>().endpoint(
         move |bot: Bot, msg: Message, cmd: Command| {
             let db = db.clone();
+            let or_key = or_key.clone();
+            let or_model = or_model.clone();
             async move {
-                handle_command(bot, msg, cmd, db).await?;
+                handle_command(bot, msg, cmd, db, &or_key, &or_model).await?;
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             }
         },
@@ -118,6 +125,8 @@ async fn handle_command(
     msg: Message,
     cmd: Command,
     db: Arc<Db>,
+    openrouter_api_key: &Option<String>,
+    openrouter_model: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let chat_id = msg.chat.id.0;
     let username = msg
@@ -166,6 +175,10 @@ async fn handle_command(
                  \n\
                  ☀️ <b>Daily Digest</b>\n\
                  /today — your daily agenda at a glance\n\
+                 \n\
+                 🤖 <b>AI Assistant</b>\n\
+                 /ai <i>anything</i> — ask in natural language!\n\
+                 e.g. /ai add eggs to groceries and mark chore 3 done\n\
                  \n\
                  Type /help anytime for the full command reference. Let's go! 🚀",
             );
@@ -708,6 +721,62 @@ async fn handle_command(
                 Err(e) => {
                     bot.send_message(msg.chat.id, format!("❌ Error: {e}"))
                         .await?;
+                }
+            }
+        }
+
+        Command::Ai(prompt) => {
+            let prompt = prompt.trim();
+            if prompt.is_empty() {
+                bot.send_message(
+                    msg.chat.id,
+                    "Usage: /ai <what you want to do>\n\n\
+                     Examples:\n\
+                     • /ai add eggs and milk to groceries\n\
+                     • /ai what chores are due today?\n\
+                     • /ai mark chore 3 done\n\
+                     • /ai create an event for friday: dinner with friends",
+                )
+                .await?;
+                return Ok(());
+            }
+            match openrouter_api_key {
+                Some(key) => {
+                    // Send a "thinking" indicator
+                    let thinking = bot
+                        .send_message(msg.chat.id, "🤔 Thinking…")
+                        .await?;
+
+                    match crate::ai::chat(prompt, &db, key, openrouter_model).await {
+                        Ok(reply) => {
+                            // Delete the "thinking" message
+                            let _ = bot
+                                .delete_message(msg.chat.id, thinking.id)
+                                .await;
+                            // Try Markdown first, fall back to plain text
+                            let send_result = bot
+                                .send_message(msg.chat.id, &reply)
+                                .parse_mode(ParseMode::MarkdownV2)
+                                .await;
+                            if send_result.is_err() {
+                                bot.send_message(msg.chat.id, &reply).await?;
+                            }
+                        }
+                        Err(e) => {
+                            let _ = bot
+                                .delete_message(msg.chat.id, thinking.id)
+                                .await;
+                            bot.send_message(msg.chat.id, format!("❌ AI error: {e}"))
+                                .await?;
+                        }
+                    }
+                }
+                None => {
+                    bot.send_message(
+                        msg.chat.id,
+                        "⚠️ AI not configured. Set OPENROUTER_API_KEY or add it to config.",
+                    )
+                    .await?;
                 }
             }
         }

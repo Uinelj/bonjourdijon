@@ -17,3 +17,10 @@ templates = "templates/**/*.html"
 [telegram]
 # Telegram bot token (optional — omit to run web UI only)
 # token = "123456:ABC-DEF..."
+
+[openrouter]
+# API key for the /ai command (optional — uses OpenRouter.ai)
+# Get a free key at https://openrouter.ai/keys
+# api_key = "sk-or-v1-..."
+# model = "google/gemini-2.0-flash-exp:free"  # default, free tier
+# Other free options: "meta-llama/llama-4-scout", "deepseek/deepseek-chat-v3-0324:free"

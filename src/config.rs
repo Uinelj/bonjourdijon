@@ -12,12 +12,20 @@ pub struct FileConfig {
     pub log_level: Option<String>,
     pub templates: Option<String>,
     pub telegram: TelegramConfig,
+    pub openrouter: OpenRouterConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct TelegramConfig {
     pub token: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct OpenRouterConfig {
+    pub api_key: Option<String>,
+    pub model: Option<String>,
 }
 
 /// Resolved config after merging: CLI > env > file > defaults.
@@ -28,6 +36,8 @@ pub struct Config {
     pub log_level: String,
     pub templates: String,
     pub telegram_token: Option<String>,
+    pub openrouter_api_key: Option<String>,
+    pub openrouter_model: String,
 }
 
 impl Config {
@@ -75,12 +85,23 @@ impl Config {
             .ok()
             .or(file_cfg.telegram.token);
 
+        let openrouter_api_key = std::env::var("OPENROUTER_API_KEY")
+            .ok()
+            .or(file_cfg.openrouter.api_key);
+
+        let openrouter_model = std::env::var("OPENROUTER_MODEL")
+            .ok()
+            .or(file_cfg.openrouter.model)
+            .unwrap_or_else(|| "google/gemini-2.0-flash-exp:free".to_string());
+
         Config {
             db,
             port,
             log_level,
             templates,
             telegram_token,
+            openrouter_api_key,
+            openrouter_model,
         }
     }
 }
