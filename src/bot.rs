@@ -185,6 +185,12 @@ async fn handle_command(
             bot.send_message(msg.chat.id, text)
                 .parse_mode(ParseMode::Html)
                 .await?;
+
+            // Also send today's digest right after the welcome
+            let digest = build_daily_digest(&db, chat_id);
+            bot.send_message(msg.chat.id, digest)
+                .parse_mode(ParseMode::Html)
+                .await?;
         }
 
         Command::Help => {
