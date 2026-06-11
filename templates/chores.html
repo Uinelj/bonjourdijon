@@ -1,153 +1,126 @@
 {% extends "base.html" %}
 
-{% block title %}Chores — BonjourDijon{% endblock %}
+{% block title %}chores · bonjourdijon{% endblock %}
 
 {% block content %}
-<h1>📋 Chores</h1>
+<h1>chores</h1>
 
 <section class="card">
-    <h2>Add a chore</h2>
+    <h2>add a chore</h2>
     <form method="POST" action="/chores" class="chore-form" id="chore-form">
         <div class="inline-form">
-            <input type="text" name="title" placeholder="What needs doing?" required>
-            <input type="text" name="owner" placeholder="Owner (optional)">
+            <input type="text" name="title" placeholder="what needs doing?" required>
+            <input type="text" name="owner" placeholder="owner (optional)">
         </div>
 
         <div class="freq-picker">
-            <label class="freq-opt"><input type="radio" name="frequency" value="once" checked> Once</label>
-            <label class="freq-opt"><input type="radio" name="frequency" value="daily"> Daily</label>
-            <label class="freq-opt"><input type="radio" name="frequency" value="weekly"> Weekly</label>
-            <label class="freq-opt"><input type="radio" name="frequency" value="biweekly"> Every 2 weeks</label>
-            <label class="freq-opt"><input type="radio" name="frequency" value="monthly"> Monthly</label>
+            <label class="freq-opt"><input type="radio" name="frequency" value="once" checked> once</label>
+            <label class="freq-opt"><input type="radio" name="frequency" value="daily"> daily</label>
+            <label class="freq-opt"><input type="radio" name="frequency" value="weekly"> weekly</label>
+            <label class="freq-opt"><input type="radio" name="frequency" value="biweekly"> 2 weeks</label>
+            <label class="freq-opt"><input type="radio" name="frequency" value="monthly"> monthly</label>
         </div>
 
         <div class="dow-picker" id="dow-picker" hidden>
-            <span class="dow-label">On:</span>
-            <button type="button" class="dow-btn" data-dow="1">Mo</button>
-            <button type="button" class="dow-btn" data-dow="2">Tu</button>
-            <button type="button" class="dow-btn" data-dow="3">We</button>
-            <button type="button" class="dow-btn" data-dow="4">Th</button>
-            <button type="button" class="dow-btn" data-dow="5">Fr</button>
-            <button type="button" class="dow-btn" data-dow="6">Sa</button>
-            <button type="button" class="dow-btn selected" data-dow="0">Su</button>
+            <span class="dow-label">on:</span>
+            <button type="button" class="dow-btn" data-dow="1">mo</button>
+            <button type="button" class="dow-btn" data-dow="2">tu</button>
+            <button type="button" class="dow-btn" data-dow="3">we</button>
+            <button type="button" class="dow-btn" data-dow="4">th</button>
+            <button type="button" class="dow-btn" data-dow="5">fr</button>
+            <button type="button" class="dow-btn" data-dow="6">sa</button>
+            <button type="button" class="dow-btn selected" data-dow="0">su</button>
         </div>
 
         <input type="hidden" name="cron" id="cron-field" value="">
 
-        <div class="inline-form" style="margin-top: 0.5rem;">
-            <input type="number" name="estimate_minutes" min="1" max="480" placeholder="⏱ Est. minutes (optional)" style="max-width: 200px;">
+        <div class="inline-form">
+            <input type="number" name="estimate_minutes" min="1" max="480" placeholder="est. min" style="max-width: 100px;">
             <input type="date" name="due_date" id="due-date-field">
-            <button type="submit" class="btn">Add</button>
+            <button type="submit" class="btn">add</button>
         </div>
     </form>
 </section>
 
 {% if recurring | length > 0 %}
 <section class="card">
-    <h2>🔁 Recurring Chores</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Chore</th>
-                <th>Owner</th>
-                <th>Frequency</th>
-                <th>Estimate</th>
-                <th>Next Due</th>
-                <th></th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for c in recurring %}
-            <tr>
-                <td>{{ c.title }}{% if c.followup_count > 0 %} <span class="tag">⛓ {{ c.followup_count }}</span>{% endif %}</td>
-                <td>{{ c.owner | default(value="-") }}</td>
-                <td><span class="tag periodic">🔁 {{ c.frequency }}</span></td>
-                <td>{% if c.estimate_minutes %}<span class="tag">⏱ {{ c.estimate_minutes }}min</span>{% else %}-{% endif %}</td>
-                <td>{% if c.next_due %}{{ c.next_due }}{% else %}-{% endif %}</td>
-                <td>
-                    {% if c.instance_id %}
-                    <form method="POST" action="/chores/{{ c.instance_id }}/done" style="display:inline">
-                        <button type="submit" class="btn btn-small">Done ✓</button>
-                    </form>
-                    {% endif %}
-                    <form method="POST" action="/chores/definitions/{{ c.def_id }}/delete" style="display:inline; margin-left: 0.25rem;">
-                        <button type="submit" class="btn btn-small btn-danger" onclick="return confirm('Delete this recurring chore?')">✕</button>
-                    </form>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <h2>recurring</h2>
+    <ul class="item-list">
+        {% for c in recurring %}
+        <li>
+            <span class="item-title">{{ c.title }}</span>
+            {% if c.followup_count > 0 %}<span class="tag">⛓ {{ c.followup_count }}</span>{% endif %}
+            {% if c.owner %}<span class="tag">@{{ c.owner }}</span>{% endif %}
+            <span class="tag periodic">{{ c.frequency }}</span>
+            {% if c.estimate_minutes %}<span class="tag">{{ c.estimate_minutes }}min</span>{% endif %}
+            {% if c.next_due %}<span class="tag">{{ c.next_due }}</span>{% endif %}
+            <div class="actions">
+                {% if c.instance_id %}
+                <form method="POST" action="/chores/{{ c.instance_id }}/done">
+                    <button type="submit" class="btn btn-sm">done ✓</button>
+                </form>
+                {% endif %}
+                <form method="POST" action="/chores/definitions/{{ c.def_id }}/delete">
+                    <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('delete this recurring chore?')">✕</button>
+                </form>
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
 </section>
 {% endif %}
 
 <section class="card">
-    <h2>📋 One-time Chores</h2>
+    <h2>one-time</h2>
     {% if one_time | length == 0 %}
-        <p class="empty">No one-time chores — nice and clean! 🎉</p>
+        <p class="empty">no one-time chores — nice and clean! 🎉</p>
     {% else %}
-    <table>
-        <thead>
-            <tr>
-                <th>Chore</th>
-                <th>Owner</th>
-                <th>Estimate</th>
-                <th>Due</th>
-                <th>Status</th>
-                <th></th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for c in one_time %}
-            <tr class="{% if c.done %}done-row{% endif %}">
-                <td>{{ c.title }}{% if c.followup_count > 0 %} <span class="tag">⛓ {{ c.followup_count }}</span>{% endif %}</td>
-                <td>{{ c.owner | default(value="-") }}</td>
-                <td>{% if c.estimate_minutes %}<span class="tag">⏱ {{ c.estimate_minutes }}min</span>{% else %}-{% endif %}</td>
-                <td>{% if c.due_at %}{{ c.due_at }}{% else %}-{% endif %}</td>
-                <td>{% if c.done %}✅{% else %}⬜{% endif %}</td>
-                <td>
-                    {% if not c.done %}
-                    <form method="POST" action="/chores/{{ c.id }}/done" style="display:inline">
-                        <button type="submit" class="btn btn-small">Done ✓</button>
-                    </form>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <ul class="item-list">
+        {% for c in one_time %}
+        <li{% if c.done %} class="done-row"{% endif %}>
+            <span class="item-title">{{ c.title }}</span>
+            {% if c.followup_count > 0 %}<span class="tag">⛓ {{ c.followup_count }}</span>{% endif %}
+            {% if c.owner %}<span class="tag">@{{ c.owner }}</span>{% endif %}
+            {% if c.estimate_minutes %}<span class="tag">{{ c.estimate_minutes }}min</span>{% endif %}
+            {% if c.due_at %}<span class="tag{% if not c.done %} due{% endif %}">{{ c.due_at }}</span>{% endif %}
+            {% if not c.done %}
+            <div class="actions">
+                <form method="POST" action="/chores/{{ c.id }}/done">
+                    <button type="submit" class="btn btn-sm">done ✓</button>
+                </form>
+            </div>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
     {% endif %}
 </section>
 
 <script>
 (function() {
-    const form = document.getElementById('chore-form');
-    const dowPicker = document.getElementById('dow-picker');
-    const cronField = document.getElementById('cron-field');
-    const dueDateField = document.getElementById('due-date-field');
-    const freqRadios = form.querySelectorAll('input[name="frequency"]');
-    const dowBtns = dowPicker.querySelectorAll('.dow-btn');
+    var form = document.getElementById('chore-form');
+    var dowPicker = document.getElementById('dow-picker');
+    var cronField = document.getElementById('cron-field');
+    var dueDateField = document.getElementById('due-date-field');
+    var freqRadios = form.querySelectorAll('input[name="frequency"]');
+    var dowBtns = dowPicker.querySelectorAll('.dow-btn');
 
-    // Show/hide dow picker + due date based on frequency
-    freqRadios.forEach(r => r.addEventListener('change', () => {
-        const v = r.value;
+    freqRadios.forEach(function(r) { r.addEventListener('change', function() {
+        var v = r.value;
         dowPicker.hidden = (v !== 'weekly' && v !== 'biweekly');
-        // Hide due date unless "once"
         dueDateField.style.display = (v === 'once') ? '' : 'none';
-    }));
+    })});
 
-    // Toggle dow-btn selection
-    dowBtns.forEach(btn => btn.addEventListener('click', () => {
+    dowBtns.forEach(function(btn) { btn.addEventListener('click', function() {
         btn.classList.toggle('selected');
-    }));
+    })});
 
-    // On submit, build cron from  selected dow buttons
-    form.addEventListener('submit', () => {
-        const freq = form.querySelector('input[name="frequency"]:checked').value;
+    form.addEventListener('submit', function() {
+        var freq = form.querySelector('input[name="frequency"]:checked').value;
         if (freq === 'weekly' || freq === 'biweekly') {
-            const selected = Array.from(dowBtns).filter(b => b.classList.contains('selected'));
+            var selected = Array.from(dowBtns).filter(function(b) { return b.classList.contains('selected'); });
             if (selected.length > 0) {
-                const days = selected.map(b => b.dataset.dow).join(',');
+                var days = selected.map(function(b) { return b.dataset.dow; }).join(',');
                 cronField.value = '0 9 * * ' + days;
             }
         }

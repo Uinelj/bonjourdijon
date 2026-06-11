@@ -1,107 +1,96 @@
 {% extends "base.html" %}
 
-{% block title %}Grocery Map — BonjourDijon{% endblock %}
+{% block title %}grocery map · bonjourdijon{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+{% endblock %}
 
 {% block content %}
-<h1>📍 Grocery Map</h1>
+<h1>grocery map</h1>
 
 <section class="card">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-        <p style="margin: 0;">
-            <strong>{{ geo_item_count }}</strong> store location{% if geo_item_count != 1 %}s{% endif %} on map
-            — <strong>{{ total_pending }}</strong> item{% if total_pending != 1 %}s{% endif %} to buy total
+    <div class="map-toolbar">
+        <p>
+            <strong>{{ geo_item_count }}</strong> location{% if geo_item_count != 1 %}s{% endif %}
+            · <strong>{{ total_pending }}</strong> item{% if total_pending != 1 %}s{% endif %} to buy
         </p>
-        <div>
-            <a href="/groceries" class="btn btn-small">← List View</a>
+        <div class="btn-group">
+            <a href="/groceries" class="btn btn-sm btn-ghost">← list view</a>
             {% if geo_item_count > 0 and has_home %}
-            <a href="/groceries/route.gpx" class="btn btn-small" download="errand-route.gpx">⬇ GPX Route</a>
+            <a href="/groceries/route.gpx" class="btn btn-sm btn-ghost" download="errand-route.gpx">⬇ gpx</a>
             {% endif %}
             {% if google_maps_url %}
-            <a href="{{ google_maps_url }}" class="btn btn-small" target="_blank" rel="noopener" style="background: #4285F4;">🗺️ Navigate (Google Maps)</a>
+            <a href="{{ google_maps_url }}" class="btn btn-sm" target="_blank" rel="noopener">🗺️ navigate</a>
             {% endif %}
         </div>
     </div>
 
-    <div id="map" style="height: 500px; border-radius: 8px; border: 1px solid var(--border);"></div>
+    <div id="map" class="map-container map-container-lg"></div>
 
     {% if geo_item_count == 0 %}
-    <p class="empty" style="margin-top: 1rem;">
-        No grocery items have locations yet. Add a store name or coordinates when adding items, and they'll appear on the map.
+    <p class="empty" style="margin-top: 0.75rem;">
+        no grocery items have locations yet. add a store name or coordinates and they'll appear here.
     </p>
     {% endif %}
 </section>
 
 {% if geo_item_count > 0 %}
 <section class="card">
-    <h2>📋 Items by Location</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Store</th>
-                <th>Items</th>
-                <th>Priority</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for store in stores %}
-            <tr>
-                <td>
-                    <strong>{{ store.name }}</strong>
-                    <br><small style="color: var(--muted);">{{ store.lat }}, {{ store.lon }}</small>
-                </td>
-                <td>
-                    {% for item in store.items %}
-                        <span>{{ item.item }}{% if not loop.last %}, {% endif %}</span>
-                    {% endfor %}
-                </td>
-                <td>
-                    {% if store.max_priority >= 4 %}
-                        <span class="prio-pill prio-high">High</span>
-                    {% elif store.max_priority >= 2 %}
-                        <span class="prio-pill prio-mid">Mid</span>
-                    {% else %}
-                        <span class="prio-pill prio-low">Low</span>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <h2>items by location</h2>
+    <ul class="item-list">
+        {% for store in stores %}
+        <li>
+            <span class="item-title">{{ store.name }}</span>
+            <small>{{ store.lat }}, {{ store.lon }}</small>
+            <span class="tag">
+                {% for item in store.items %}{{ item.item }}{% if not loop.last %}, {% endif %}{% endfor %}
+            </span>
+            {% if store.max_priority >= 4 %}
+                <span class="prio-pill prio-high">high</span>
+            {% elif store.max_priority >= 2 %}
+                <span class="prio-pill prio-mid">mid</span>
+            {% else %}
+                <span class="prio-pill prio-low">low</span>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
 </section>
 {% endif %}
 
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 
 <script>
 (function() {
-    const items = {{ items_json | safe }};
-    const home = {{ home_json | safe }};
-    const hasItems = items.length > 0;
-    const hasHome = home.lat !== null;
+    var items = {{ items_json | safe }};
+    var home = {{ home_json | safe }};
+    var hasItems = items.length > 0;
+    var hasHome = home.lat !== null;
 
-    // Default to Dijon centre if nothing is set
-    const defaultLat = 47.3220;
-    const defaultLon = 5.0415;
+    var defaultLat = 47.3220;
+    var defaultLon = 5.0415;
 
-    const centerLat = hasHome ? home.lat : (hasItems ? items[0].lat : defaultLat);
-    const centerLon = hasHome ? home.lon : (hasItems ? items[0].lon : defaultLon);
+    var centerLat = hasHome ? home.lat : (hasItems ? items[0].lat : defaultLat);
+    var centerLon = hasHome ? home.lon : (hasItems ? items[0].lon : defaultLon);
 
-    const map = L.map('map').setView([centerLat, centerLon], 14);
+    var isDark = document.documentElement.dataset.theme === 'dark';
+    var tiles = isDark
+        ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+        : 'https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png';
+    var attr = isDark
+        ? '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>'
+        : '<a href="https://github.com/cyclosm/cyclosm-cartocss-style/releases">CyclOSM</a> | &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>';
 
-    // CyclOSM tiles for cycling-friendly map
-    L.tileLayer('https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png', {
-        maxZoom: 20,
-        attribution: '<a href="https://github.com/cyclosm/cyclosm-cartocss-style/releases" title="CyclOSM - Open Bicycle Render">CyclOSM</a> | Map data &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-    }).addTo(map);
+    var map = L.map('map').setView([centerLat, centerLon], 14);
+    L.tileLayer(tiles, { maxZoom: 20, attribution: attr }).addTo(map);
 
-    const bounds = [];
+    var bounds = [];
 
-    // Home marker
     if (hasHome) {
-        const homeIcon = L.divIcon({
+        var homeIcon = L.divIcon({
             html: '<span style="font-size: 24px;">🏠</span>',
             className: 'emoji-marker',
             iconSize: [28, 28],
@@ -109,48 +98,39 @@
         });
         L.marker([home.lat, home.lon], { icon: homeIcon })
             .addTo(map)
-            .bindPopup('<strong>🏠 Home</strong><br>' + (home.name || 'Your location'));
+            .bindPopup('<strong>🏠 home</strong><br>' + (home.name || 'your location'));
         bounds.push([home.lat, home.lon]);
     }
 
-    // Grocery markers, colored by priority
     function prioColor(p) {
-        if (p >= 4) return '#e74c3c'; // red - high
-        if (p >= 2) return '#f39c12'; // orange - mid
-        return '#27ae60'; // green - low
+        if (p >= 4) return '#b44553';
+        if (p >= 2) return '#92702a';
+        return '#3d7c4f';
     }
 
     items.forEach(function(g) {
-        const color = prioColor(g.priority);
-        const icon = L.divIcon({
+        var color = prioColor(g.priority);
+        var icon = L.divIcon({
             html: '<span style="font-size: 20px;">🛒</span>',
             className: 'emoji-marker',
             iconSize: [24, 24],
             iconAnchor: [12, 12],
         });
 
-        const prioLabel = g.priority >= 4 ? 'High' : (g.priority >= 2 ? 'Mid' : 'Low');
+        var prioLabel = g.priority >= 4 ? 'high' : (g.priority >= 2 ? 'mid' : 'low');
         L.marker([g.lat, g.lon], { icon: icon })
             .addTo(map)
             .bindPopup(
                 '<strong>' + g.item + '</strong><br>' +
-                (g.where_to_buy || 'Unknown store') + '<br>' +
-                '<span style="color:' + color + '">Priority: ' + prioLabel + '</span>'
+                (g.where_to_buy || 'unknown store') + '<br>' +
+                '<span style="color:' + color + '">priority: ' + prioLabel + '</span>'
             );
         bounds.push([g.lat, g.lon]);
     });
 
-    // Fit map to show all markers
     if (bounds.length > 1) {
         map.fitBounds(bounds, { padding: [30, 30] });
     }
 })();
 </script>
-
-<style>
-.emoji-marker {
-    background: none;
-    border: none;
-}
-</style>
 {% endblock %}

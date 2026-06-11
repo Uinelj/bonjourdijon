@@ -1,81 +1,90 @@
 {% extends "base.html" %}
 
-{% block title %}Settings — BonjourDijon{% endblock %}
+{% block title %}settings · bonjourdijon{% endblock %}
+
+{% block head %}
+{% if has_location %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+{% endif %}
+{% endblock %}
 
 {% block content %}
-<h1>⚙️ Settings</h1>
+<h1>settings</h1>
 
 {% if message %}
-<section class="card" style="border-left: 4px solid {% if is_error %}var(--danger){% else %}var(--success){% endif %};">
-    <p style="margin: 0;">{% if is_error %}⚠️{% else %}✅{% endif %} {{ message }}</p>
-</section>
+<div class="message {% if is_error %}message-err{% else %}message-ok{% endif %}">
+    {{ message }}
+</div>
 {% endif %}
 
 <section class="card">
-    <h2>📍 Home Location</h2>
-    <p style="color: var(--text-light); margin-bottom: 1rem;">
-        Your home location is used as the start/end point for errand route planning on the
-        <a href="/groceries/map">grocery map</a>.
+    <h2>home location</h2>
+    <p style="margin-bottom: 0.75rem;">
+        used as start/end point for <a href="/groceries/map">errand route planning</a>.
     </p>
 
     {% if has_location %}
-    <div style="background: var(--bg); border-radius: 8px; padding: 1rem; margin-bottom: 1.25rem; display: flex; align-items: center; gap: 0.75rem;">
-        <span style="font-size: 1.5rem;">🏠</span>
+    <div class="location-preview">
+        <span>🏠</span>
         <div>
             <strong>{{ loc_name }}</strong>
-            <br><small style="color: var(--text-light);">{{ loc_lat }}, {{ loc_lon }}</small>
+            <br><small>{{ loc_lat }}, {{ loc_lon }}</small>
         </div>
     </div>
     {% else %}
-    <p class="empty" style="margin-bottom: 1rem;">No home location set yet.</p>
+    <p class="empty" style="margin-bottom: 0.75rem;">no home location set yet.</p>
     {% endif %}
 
     <form method="POST" action="/settings">
-        <div style="margin-bottom: 1rem;">
-            <label style="display: block; font-weight: 500; margin-bottom: 0.35rem;">Search by place name</label>
+        <div class="field-group">
+            <label class="field-label">search by place name</label>
             <div class="inline-form">
-                <input type="text" name="location_query" placeholder="e.g. Place de la République, Dijon" value="">
+                <input type="text" name="location_query" placeholder="e.g. place de la république, dijon">
             </div>
-            <small style="color: var(--text-light);">Geocoded via OpenStreetMap Nominatim</small>
+            <p class="field-hint">geocoded via openstreetmap nominatim</p>
         </div>
 
-        <details style="margin-bottom: 1.25rem;">
-            <summary style="cursor: pointer; color: var(--text-light); font-size: 0.9rem;">Or enter coordinates manually</summary>
-            <div style="display: flex; gap: 0.75rem; margin-top: 0.75rem;">
-                <div style="flex: 1;">
-                    <label style="display: block; font-size: 0.85rem; margin-bottom: 0.25rem;">Latitude</label>
+        <details style="margin-bottom: 0.85rem;">
+            <summary style="cursor: pointer; color: var(--muted); font-size: 0.85rem;">or enter coordinates manually</summary>
+            <div class="coords-row">
+                <div>
+                    <label class="field-label">latitude</label>
                     <input type="text" name="lat" placeholder="47.3220" value="{{ loc_lat }}">
                 </div>
-                <div style="flex: 1;">
-                    <label style="display: block; font-size: 0.85rem; margin-bottom: 0.25rem;">Longitude</label>
+                <div>
+                    <label class="field-label">longitude</label>
                     <input type="text" name="lon" placeholder="5.0415" value="{{ loc_lon }}">
                 </div>
             </div>
         </details>
 
-        <button type="submit" class="btn">💾 Save Location</button>
+        <button type="submit" class="btn">save location</button>
     </form>
 </section>
 
 {% if has_location %}
 <section class="card">
-    <h2>🗺️ Preview</h2>
-    <div id="settings-map" style="height: 300px; border-radius: 8px; border: 1px solid var(--border);"></div>
+    <h2>preview</h2>
+    <div id="settings-map" class="map-container"></div>
 
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <script>
     (function() {
-        const lat = {{ loc_lat }};
-        const lon = {{ loc_lon }};
-        const map = L.map('settings-map').setView([lat, lon], 15);
-        L.tileLayer('https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png', {
-            maxZoom: 20,
-            attribution: '<a href="https://github.com/cyclosm/cyclosm-cartocss-style/releases">CyclOSM</a> | &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-        }).addTo(map);
-        const icon = L.divIcon({
+        var lat = {{ loc_lat }};
+        var lon = {{ loc_lon }};
+        var isDark = document.documentElement.dataset.theme === 'dark';
+        var tiles = isDark
+            ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
+            : 'https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png';
+        var attr = isDark
+            ? '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>'
+            : '<a href="https://github.com/cyclosm/cyclosm-cartocss-style/releases">CyclOSM</a> | &copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>';
+
+        var map = L.map('settings-map').setView([lat, lon], 15);
+        L.tileLayer(tiles, { maxZoom: 20, attribution: attr }).addTo(map);
+        var icon = L.divIcon({
             html: '<span style="font-size: 28px;">🏠</span>',
             className: 'emoji-marker',
             iconSize: [32, 32],
@@ -83,11 +92,10 @@
         });
         L.marker([lat, lon], { icon: icon })
             .addTo(map)
-            .bindPopup('<strong>🏠 Home</strong><br>{{ loc_name }}')
+            .bindPopup('<strong>🏠 home</strong><br>{{ loc_name }}')
             .openPopup();
     })();
     </script>
-    <style>.emoji-marker { background: none; border: none; }</style>
 </section>
 {% endif %}
 {% endblock %}

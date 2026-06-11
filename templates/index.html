@@ -1,19 +1,19 @@
 {% extends "base.html" %}
 
-{% block title %}Today — BonjourDijon{% endblock %}
+{% block title %}today · bonjourdijon{% endblock %}
 
 {% block content %}
-<h1>{{ today_str }} 👋</h1>
+<h1>{{ today_str }}</h1>
 
 {% if today_events | length == 0 and today_chores | length == 0 and today_reminders | length == 0 %}
 <div class="card empty-day">
-    <p>Nothing on the plate today — enjoy! 🎉</p>
+    <p>nothing on the plate today — enjoy! 🎉</p>
 </div>
 {% endif %}
 
 {% if today_events | length > 0 %}
 <section class="card">
-    <h2>🗓️ Events ({{ today_events | length }})</h2>
+    <h2>events · {{ today_events | length }}</h2>
     <ul class="item-list">
         {% for e in today_events %}
         <li>
@@ -27,21 +27,21 @@
 
 {% if today_chores | length > 0 %}
 <section class="card">
-    <h2>📋 Chores ({{ today_chores | length }})</h2>
+    <h2>chores · {{ today_chores | length }}</h2>
     <ul class="item-list">
         {% for c in today_chores %}
         <li>
             <span class="item-title">{{ c.label }}</span>
             {% if c.detail %}<span class="tag">@{{ c.detail }}</span>{% endif %}
-            {% if c.estimate_minutes %}<span class="tag">⏱ {{ c.estimate_minutes }}min</span>{% endif %}
-            <div style="margin-left: auto; display: flex; gap: 0.25rem;">
+            {% if c.estimate_minutes %}<span class="tag">{{ c.estimate_minutes }}min</span>{% endif %}
+            <div class="actions">
                 <form method="POST" action="/chores/{{ c.id }}/postpone">
                     <input type="hidden" name="return_to" value="/">
-                    <button type="submit" class="btn btn-small btn-muted">Tomorrow →</button>
+                    <button type="submit" class="btn btn-sm btn-ghost">tomorrow →</button>
                 </form>
                 <form method="POST" action="/chores/{{ c.id }}/done">
                     <input type="hidden" name="return_to" value="/">
-                    <button type="submit" class="btn btn-small">Done ✓</button>
+                    <button type="submit" class="btn btn-sm">done ✓</button>
                 </form>
             </div>
         </li>
@@ -52,7 +52,7 @@
 
 {% if today_reminders | length > 0 %}
 <section class="card">
-    <h2>⏰ Reminders ({{ today_reminders | length }})</h2>
+    <h2>reminders · {{ today_reminders | length }}</h2>
     <ul class="item-list">
         {% for r in today_reminders %}
         <li>
@@ -65,14 +65,14 @@
 
 {% if urgent_groceries | length > 0 %}
 <section class="card">
-    <h2>🛒 Urgent Groceries</h2>
+    <h2>urgent groceries</h2>
     <ul class="item-list">
         {% for g in urgent_groceries %}
         <li>
             <span class="item-title">{{ g.item }}</span>
             {% if g.where_to_buy %}<span class="tag">{{ g.where_to_buy }}</span>{% endif %}
-            <form method="POST" action="/groceries/{{ g.id }}/bought" style="margin-left: auto;">
-                <button type="submit" class="btn btn-small">Bought ✓</button>
+            <form method="POST" action="/groceries/{{ g.id }}/bought" class="actions">
+                <button type="submit" class="btn btn-sm">bought ✓</button>
             </form>
         </li>
         {% endfor %}
@@ -81,10 +81,10 @@
 {% endif %}
 
 <div class="stat-bar">
-    <span>📋 {{ pending_chores }} pending</span>
+    <span>{{ pending_chores }} pending</span>
     <span class="stat-sep">·</span>
-    <span>🛒 {{ grocery_pending }} to buy</span>
+    <span>{{ grocery_pending }} to buy</span>
     <span class="stat-sep">·</span>
-    <span>⏰ {{ active_reminders }} reminders</span>
+    <span>{{ active_reminders }} reminders</span>
 </div>
 {% endblock %}

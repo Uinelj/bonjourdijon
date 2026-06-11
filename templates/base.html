@@ -1,31 +1,50 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light" data-hour="{{ hour }}" data-load="{{ load_level }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}BonjourDijon{% endblock %}</title>
+    <title>{% block title %}bonjourdijon{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
+    {% block head %}{% endblock %}
+    <script>
+    (function(){
+        var s = localStorage.getItem('theme');
+        var sys = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.dataset.theme = s || sys;
+    })();
+    </script>
 </head>
 <body>
-    <nav>
-        <div class="nav-inner">
-            <a href="/" class="logo">🧹 BonjourDijon</a>
-            <div class="nav-links">
-                <a href="/">Dashboard</a>
-                <a href="/chores">Chores</a>
-                <a href="/groceries">Groceries</a>
-                <a href="/groceries/map">Map</a>
-                <a href="/lists">Lists</a>
-                <a href="/calendar">Calendar</a>
-                <a href="/settings">⚙️</a>
+    <div class="shell">
+        <aside class="sidebar">
+            <a href="/" class="logo">bonjourdijon</a>
+            <nav>
+                <a href="/">/home</a>
+                <a href="/chores">/chores</a>
+                <a href="/groceries">/groceries</a>
+                <a href="/groceries/map">/map</a>
+                <a href="/lists">/lists</a>
+                <a href="/calendar">/cal</a>
+                <a href="/settings">/settings</a>
+            </nav>
+            <div class="sidebar-footer">
+                <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">◐</button>
             </div>
-        </div>
-    </nav>
-    <main>
-        {% block content %}{% endblock %}
-    </main>
-    <footer>
-        <p>BonjourDijon — keeping things tidy, one chore at a time ✨</p>
-    </footer>
+        </aside>
+        <main>
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+    <script>
+    function toggleTheme(){
+        var h = document.documentElement;
+        var n = h.dataset.theme === 'dark' ? 'light' : 'dark';
+        h.dataset.theme = n;
+        localStorage.setItem('theme', n);
+    }
+    </script>
 </body>
 </html>

@@ -1,26 +1,24 @@
 {% extends "base.html" %}
 
-{% block title %}Calendar — BonjourDijon{% endblock %}
+{% block title %}calendar · bonjourdijon{% endblock %}
 
 {% block content %}
-<h1>🗓️ Calendar</h1>
+<h1>calendar</h1>
 
-<!-- Month navigation -->
 <div class="cal-nav">
-    <a href="/calendar?year={{ prev_year }}&month={{ prev_month }}" class="btn btn-small">← Prev</a>
+    <a href="/calendar?year={{ prev_year }}&month={{ prev_month }}" class="btn btn-sm btn-ghost">← prev</a>
     <span class="cal-month-title">{{ month_name }} {{ year }}</span>
-    <a href="/calendar?year={{ next_year }}&month={{ next_month }}" class="btn btn-small">Next →</a>
+    <a href="/calendar?year={{ next_year }}&month={{ next_month }}" class="btn btn-sm btn-ghost">next →</a>
 </div>
 
-<!-- Calendar grid -->
 <div class="calendar-grid">
-    <div class="cal-header">Mo</div>
-    <div class="cal-header">Tu</div>
-    <div class="cal-header">We</div>
-    <div class="cal-header">Th</div>
-    <div class="cal-header">Fr</div>
-    <div class="cal-header">Sa</div>
-    <div class="cal-header">Su</div>
+    <div class="cal-header">mo</div>
+    <div class="cal-header">tu</div>
+    <div class="cal-header">we</div>
+    <div class="cal-header">th</div>
+    <div class="cal-header">fr</div>
+    <div class="cal-header">sa</div>
+    <div class="cal-header">su</div>
 
     {% for d in days %}
     <div class="cal-day{% if not d.in_month %} other-month{% endif %}{% if d.is_today %} today{% endif %}{% if d.item_count >= 4 %} heat-4{% elif d.item_count == 3 %} heat-3{% elif d.item_count == 2 %} heat-2{% elif d.item_count == 1 %} heat-1{% endif %}"
@@ -34,59 +32,56 @@
     {% endfor %}
 </div>
 
-<!-- Day detail panel (hidden until a day is clicked) -->
+<!-- day detail panel -->
 <div id="day-detail" class="card day-detail" style="display:none">
     <div class="day-detail-header">
-        <h2 id="day-detail-title"></h2>
-        <button class="btn btn-small" onclick="document.getElementById('day-detail').style.display='none'">✕</button>
+        <h2 id="day-detail-title" style="text-transform: none;"></h2>
+        <button class="btn btn-sm btn-ghost" onclick="document.getElementById('day-detail').style.display='none'">✕</button>
     </div>
     <ul id="day-detail-list" class="item-list"></ul>
 </div>
 
-<!-- Add event form -->
+<!-- add event -->
 <div class="card">
-    <h2>Add Event</h2>
+    <h2>add event</h2>
     <form action="/events" method="post" class="event-form">
         <div class="inline-form">
-            <input type="text" name="title" placeholder="Event title" required>
+            <input type="text" name="title" placeholder="event title" required>
             <input type="date" name="date" required>
         </div>
-        <div class="inline-form" style="margin-top: 0.75rem;">
-            <input type="date" name="end_date" placeholder="End date (optional)">
-            <input type="text" name="description" placeholder="Description (optional)">
+        <div class="inline-form" style="margin-top: 0.5rem;">
+            <input type="date" name="end_date" placeholder="end (optional)">
+            <input type="text" name="description" placeholder="description (optional)">
         </div>
-        <div style="margin-top: 0.75rem;">
-            <button type="submit" class="btn">Add Event</button>
+        <div style="margin-top: 0.5rem;">
+            <button type="submit" class="btn">add event</button>
         </div>
     </form>
 </div>
 
 <script>
-const dayData = {{ day_data_json | safe }};
+var dayData = {{ day_data_json | safe }};
 
 function showDay(date) {
-    const panel = document.getElementById('day-detail');
-    const items = dayData[date] || [];
+    var panel = document.getElementById('day-detail');
+    var items = dayData[date] || [];
 
-    // Format the date nicely
-    const d = new Date(date + 'T00:00:00');
-    const opts = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
-    document.getElementById('day-detail-title').textContent = d.toLocaleDateString('en-US', opts);
+    var d = new Date(date + 'T00:00:00');
+    var opts = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' };
+    document.getElementById('day-detail-title').textContent = d.toLocaleDateString('en-US', opts).toLowerCase();
 
-    const ul = document.getElementById('day-detail-list');
+    var ul = document.getElementById('day-detail-list');
     if (items.length === 0) {
-        ul.innerHTML = '<li class="empty">Nothing scheduled for this day.</li>';
+        ul.innerHTML = '<li class="empty">nothing scheduled.</li>';
     } else {
         ul.innerHTML = items.map(function(i) {
-            var icon = i.kind === 'event' ? '🗓️' : i.kind === 'chore' ? '📋' : '⏰';
-            return '<li><span class="cal-badge ' + i.kind + '">' + icon + '</span> <span class="item-title">' + i.label + '</span></li>';
+            return '<li><span class="cal-badge ' + i.kind + '">' + i.kind + '</span> <span class="item-title">' + i.label + '</span></li>';
         }).join('');
     }
 
     panel.style.display = '';
     panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
-    // Highlight selected day
     document.querySelectorAll('.cal-day.selected').forEach(function(el) {
         el.classList.remove('selected');
     });

@@ -1123,6 +1123,22 @@ impl Db {
             created_at: parse_dt(row.get::<_, String>(8)?),
         })
     }
+
+    // ─── Counts (for UI ambient) ─────────────────────────────────────
+
+    pub fn count_pending_chores(&self) -> rusqlite::Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM chores WHERE done = 0", [], |r| r.get(0))
+    }
+
+    pub fn count_pending_groceries(&self) -> rusqlite::Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM groceries WHERE bought = 0",
+            [],
+            |r| r.get(0),
+        )
+    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────

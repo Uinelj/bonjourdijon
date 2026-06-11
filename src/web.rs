@@ -6,7 +6,7 @@ use axum::{
     response::{Html, IntoResponse, Redirect},
     routing::{get, post},
 };
-use chrono::{Datelike, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{Datelike, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use tera::{Context, Tera};
 use tower_http::services::ServeDir;
@@ -14,6 +14,24 @@ use tower_http::services::ServeDir;
 use crate::db::Db;
 use crate::mcp;
 use crate::recurrence;
+
+/// Inject ambient theme data into every page context:
+/// - `hour` (0-23): for time-of-day color tinting
+/// - `load_level` (0-3): for accent color based on pending task count
+fn inject_ambient(ctx: &mut Context, db: &Db) {
+    let hour = chrono::Local::now().hour();
+    ctx.insert("hour", &hour);
+
+    let pending = db.count_pending_chores().unwrap_or(0)
+        + db.count_pending_groceries().unwrap_or(0);
+    let load_level: i64 = match pending {
+        0..=2 => 0,
+        3..=6 => 1,
+        7..=12 => 2,
+        _ => 3,
+    };
+    ctx.insert("load_level", &load_level);
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -164,6 +182,7 @@ async fn index(State(state): State<AppState>) -> Html<String> {
     let today_str = today.format("%A, %B %e, %Y").to_string();
 
     let mut ctx = Context::new();
+    inject_ambient(&mut ctx, &state.db);
     ctx.insert("today_str", &today_str);
     ctx.insert("today_events", &today_events);
     ctx.insert("today_chores", &today_chores);
@@ -244,6 +263,7 @@ async fn chores_page(State(state): State<AppState>) -> Html<String> {
         .collect();
 
     let mut ctx = Context::new();
+    inject_ambient(&mut ctx, &state.db);
     ctx.insert("recurring", &recurring);
     ctx.insert("one_time", &one_time);
 
@@ -368,6 +388,7 @@ async fn lists_page(State(state): State<AppState>) -> Html<String> {
     let list_names = state.db.get_all_list_names().unwrap_or_default();
 
     let mut ctx = Context::new();
+    inject_ambient(&mut ctx, &state.db);
     ctx.insert("list_names", &list_names);
 
     let html = state
@@ -384,6 +405,7 @@ async fn list_items_page(
     let items = state.db.get_all_list_items(&name).unwrap_or_default();
 
     let mut ctx = Context::new();
+    inject_ambient(&mut ctx, &state.db);
     ctx.insert("list_name", &name);
     ctx.insert("items", &items);
 
@@ -422,6 +444,7 @@ async fn groceries_page(State(state): State<AppState>) -> Html<String> {
     let items = state.db.list_groceries(false).unwrap_or_default();
 
     let mut ctx = Context::new();
+    inject_ambient(&mut ctx, &state.db);
     ctx.insert("items", &items);
 
     let html = state
@@ -593,6 +616,7 @@ async fn groceries_map_page(State(state): State<AppState>) -> Html<String> {
         serde_json::to_string(&items_json).unwrap_or_else(|_| "[]".to_string());
 
     let mut ctx = Context::new();
+    inject_ambient(&mut ctx, &state.db);
     ctx.insert("geo_item_count", &geo_items.len());
     ctx.insert("total_pending", &total_pending);
     ctx.insert("stores", &stores);
@@ -869,6 +893,7 @@ async fn calendar_page(
     ];
 
     let mut ctx = Context::new();
+    inject_ambient(&mut ctx, &state.db);
     ctx.insert("days", &days);
     ctx.insert("year", &year);
     ctx.insert("month", &month);
@@ -950,6 +975,7 @@ async fn settings_page(State(state): State<AppState>) -> Html<String> {
     let has_location = loc_lat.is_some() && loc_lon.is_some();
 
     let mut ctx = Context::new();
+    inject_ambient(&mut ctx, &state.db);
     ctx.insert("loc_name", &loc_name);
     ctx.insert("loc_lat", &loc_lat.map(|v| format!("{v:.6}")).unwrap_or_default());
     ctx.insert("loc_lon", &loc_lon.map(|v| format!("{v:.6}")).unwrap_or_default());
@@ -1035,6 +1061,7 @@ async fn save_settings(
     let has_location = loc_lat.is_some() && loc_lon.is_some();
 
     let mut ctx = Context::new();
+    inject_ambient(&mut ctx, &state.db);
     ctx.insert("loc_name", &loc_name);
     ctx.insert("loc_lat", &loc_lat.map(|v| format!("{v:.6}")).unwrap_or_default());
     ctx.insert("loc_lon", &loc_lon.map(|v| format!("{v:.6}")).unwrap_or_default());
