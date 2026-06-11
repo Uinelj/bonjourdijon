@@ -4,6 +4,7 @@ mod ai;
 mod bot;
 mod config;
 mod db;
+mod geo;
 mod mcp;
 mod models;
 mod parser;

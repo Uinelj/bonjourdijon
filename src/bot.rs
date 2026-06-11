@@ -2,9 +2,10 @@ use std::sync::Arc;
 
 use chrono::{Datelike, TimeZone, Utc};
 use teloxide::prelude::*;
-use teloxide::types::ParseMode;
+use teloxide::types::{InputFile, LinkPreviewOptions, ParseMode};
 use teloxide::utils::command::BotCommands;
 
+use crate::ai::{self, ConversationStore};
 use crate::db::Db;
 use crate::parser;
 use crate::recurrence;
@@ -51,8 +52,10 @@ pub enum Command {
     Event(String),
     #[command(description = "list upcoming events")]
     Events,
-    #[command(description = "ask the AI assistant: /ai add eggs to groceries")]
-    Ai(String),
+    #[command(description = "plan an errand route: GPX file + map links")]
+    Route,
+    #[command(description = "start a fresh AI conversation")]
+    New,
 }
 
 pub async fn run(bot: Bot, db: Arc<Db>, openrouter_api_key: Option<String>, openrouter_model: String) {
@@ -61,17 +64,42 @@ pub async fn run(bot: Bot, db: Arc<Db>, openrouter_api_key: Option<String>, open
 
     let or_key = Arc::new(openrouter_api_key);
     let or_model = Arc::new(openrouter_model);
+    let conversations = ai::new_conversation_store();
 
-    let handler = Update::filter_message().filter_command::<Command>().endpoint(
-        move |bot: Bot, msg: Message, cmd: Command| {
-            let db = db.clone();
-            let or_key = or_key.clone();
-            let or_model = or_model.clone();
-            async move {
-                handle_command(bot, msg, cmd, db, &or_key, &or_model).await?;
-                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-            }
-        },
+    // Clone for the two handler branches
+    let db_cmd = db.clone();
+    let convs_cmd = conversations.clone();
+    let db_ai = db.clone();
+    let or_key_ai = or_key.clone();
+    let or_model_ai = or_model.clone();
+    let convs_ai = conversations.clone();
+
+    // Branch: try /commands first, then fall through to plain-text → AI
+    let handler = Update::filter_message().branch(
+        // Branch 1: known slash commands
+        dptree::entry()
+            .filter_command::<Command>()
+            .endpoint(move |bot: Bot, msg: Message, cmd: Command| {
+                let db = db_cmd.clone();
+                let convs = convs_cmd.clone();
+                async move {
+                    handle_command(bot, msg, cmd, db, convs).await?;
+                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                }
+            }),
+    ).branch(
+        // Branch 2: any other text message → AI assistant
+        dptree::entry()
+            .endpoint(move |bot: Bot, msg: Message| {
+                let db = db_ai.clone();
+                let or_key = or_key_ai.clone();
+                let or_model = or_model_ai.clone();
+                let convs = convs_ai.clone();
+                async move {
+                    handle_ai_message(bot, msg, db, &or_key, &or_model, convs).await?;
+                    Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+                }
+            }),
     );
 
     Dispatcher::builder(bot, handler)
@@ -125,8 +153,7 @@ async fn handle_command(
     msg: Message,
     cmd: Command,
     db: Arc<Db>,
-    openrouter_api_key: &Option<String>,
-    openrouter_model: &str,
+    conversations: ConversationStore,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let chat_id = msg.chat.id.0;
     let username = msg
@@ -134,6 +161,10 @@ async fn handle_command(
         .as_ref()
         .and_then(|u| u.username.clone())
         .unwrap_or_else(|| "anonymous".into());
+
+    // Remember this chat ID as the default for notifications on items
+    // created via web/MCP (which have chat_id = 0).
+    let _ = db.set_setting("default_chat_id", &chat_id.to_string());
 
     match cmd {
         Command::Start => {
@@ -163,6 +194,7 @@ async fn handle_command(
                  /buy <i>item @Store !priority</i>\n\
                  /groceries — see the list\n\
                  /bought <i>id</i> — mark as bought\n\
+                 /route — plan an errand route (GPX + map links)\n\
                  \n\
                  📝 <b>Lists</b>\n\
                  /add <i>listname item</i> — add to any list\n\
@@ -177,8 +209,10 @@ async fn handle_command(
                  /today — your daily agenda at a glance\n\
                  \n\
                  🤖 <b>AI Assistant</b>\n\
-                 /ai <i>anything</i> — ask in natural language!\n\
-                 e.g. /ai add eggs to groceries and mark chore 3 done\n\
+                 Just type any message without a / and I'll understand!\n\
+                 I remember our conversation — follow-ups work naturally.\n\
+                 /new — start a fresh conversation\n\
+                 e.g. <i>add eggs to groceries and mark chore 3 done</i>\n\
                  \n\
                  Type /help anytime for the full command reference. Let's go! 🚀",
             );
@@ -564,7 +598,7 @@ async fn handle_command(
                 bot.send_message(msg.chat.id, "Please specify what to buy.").await?;
                 return Ok(());
             }
-            match db.add_grocery(&item_name, store.as_deref(), priority) {
+            match db.add_grocery(&item_name, store.as_deref(), priority, None, None) {
                 Ok(g) => {
                     let store_info = g
                         .where_to_buy
@@ -731,60 +765,244 @@ async fn handle_command(
             }
         }
 
-        Command::Ai(prompt) => {
-            let prompt = prompt.trim();
-            if prompt.is_empty() {
-                bot.send_message(
-                    msg.chat.id,
-                    "Usage: /ai <what you want to do>\n\n\
-                     Examples:\n\
-                     • /ai add eggs and milk to groceries\n\
-                     • /ai what chores are due today?\n\
-                     • /ai mark chore 3 done\n\
-                     • /ai create an event for friday: dinner with friends",
-                )
-                .await?;
-                return Ok(());
-            }
-            match openrouter_api_key {
-                Some(key) => {
-                    // Send a "thinking" indicator
-                    let thinking = bot
-                        .send_message(msg.chat.id, "🤔 Thinking…")
-                        .await?;
+        Command::Route => {
+            handle_route_command(&bot, &msg, &db).await?;
+        }
 
-                    match crate::ai::chat(prompt, &db, key, openrouter_model).await {
-                        Ok(reply) => {
-                            // Delete the "thinking" message
-                            let _ = bot
-                                .delete_message(msg.chat.id, thinking.id)
-                                .await;
-                            // Try Markdown first, fall back to plain text
-                            let send_result = bot
-                                .send_message(msg.chat.id, &reply)
-                                .parse_mode(ParseMode::MarkdownV2)
-                                .await;
-                            if send_result.is_err() {
-                                bot.send_message(msg.chat.id, &reply).await?;
-                            }
-                        }
-                        Err(e) => {
-                            let _ = bot
-                                .delete_message(msg.chat.id, thinking.id)
-                                .await;
-                            bot.send_message(msg.chat.id, format!("❌ AI error: {e}"))
-                                .await?;
-                        }
+        Command::New => {
+            let chat_id = msg.chat.id.0;
+            let had_conversation = {
+                let mut store = conversations.lock().unwrap();
+                store.remove(&chat_id).is_some()
+            };
+            let text = if had_conversation {
+                "🧹 Conversation cleared! Send me a new message to start fresh."
+            } else {
+                "✨ No active conversation. Just send me a message!"
+            };
+            bot.send_message(msg.chat.id, text).await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Build and send an errand route: GPX file + clickable map links.
+async fn handle_route_command(
+    bot: &Bot,
+    msg: &Message,
+    db: &Db,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    // 1. Get user home location
+    let home_json = match db.get_setting("user_location").ok().flatten() {
+        Some(h) => h,
+        None => {
+            bot.send_message(
+                msg.chat.id,
+                "📍 Home location not set. Use the /settings page or ask me to set your location first.",
+            )
+            .await?;
+            return Ok(());
+        }
+    };
+    let home: serde_json::Value = serde_json::from_str(&home_json).unwrap_or_default();
+    let home_lat = home.get("lat").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let home_lon = home.get("lon").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    if home_lat == 0.0 && home_lon == 0.0 {
+        bot.send_message(msg.chat.id, "📍 Home location is invalid. Set it via the settings page.")
+            .await?;
+        return Ok(());
+    }
+    let home_point = (home_lat, home_lon);
+
+    // 2. Get pending grocery items with coordinates
+    let items = db.list_groceries(true).unwrap_or_default();
+    let store_points: Vec<(f64, f64)> = {
+        let mut points = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for g in &items {
+            if let (Some(lat), Some(lon)) = (g.lat, g.lon) {
+                let key = ((lat * 10000.0).round() as i64, (lon * 10000.0).round() as i64);
+                if seen.insert(key) {
+                    points.push((lat, lon));
+                }
+            }
+        }
+        points
+    };
+
+    if store_points.is_empty() {
+        bot.send_message(
+            msg.chat.id,
+            "🛒 No grocery items have locations yet.\n\
+             Add a store name or coordinates when buying items (e.g. /buy milk @Carrefour).",
+        )
+        .await?;
+        return Ok(());
+    }
+
+    // 3. Order waypoints: home → nearest-neighbour stores → home
+    let ordered = crate::geo::nearest_neighbour_order(home_point, &store_points);
+    let mut waypoints = vec![home_point];
+    waypoints.extend_from_slice(&ordered);
+    waypoints.push(home_point);
+
+    let store_count = ordered.len();
+    let grocery_count = items.iter().filter(|g| g.lat.is_some()).count();
+
+    // 4. Send a "planning" message while we call BRouter
+    let planning = bot
+        .send_message(msg.chat.id, "🗺️ Planning your route…")
+        .await?;
+
+    // 5. Build links (these don't require network calls)
+    let google_url = crate::geo::google_maps_directions_url(&waypoints, "walking");
+    let brouter_url = crate::geo::brouter_web_url(&waypoints, "trekking");
+
+    // 6. Try to fetch GPX from BRouter (may fail if service is down)
+    let gpx_result = tokio::task::spawn_blocking({
+        let wps = waypoints.clone();
+        move || crate::geo::plan_route_gpx_blocking(&wps, "trekking")
+    })
+    .await;
+
+    // Delete the "planning" message
+    let _ = bot.delete_message(msg.chat.id, planning.id).await;
+
+    // 7. Build the summary message
+    let home_name = home
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Home");
+
+    let mut text = format!(
+        "🗺️ <b>Errand Route</b>\n\n\
+         📍 {store_count} stop{s} — {grocery_count} item{si} to buy\n\
+         🏠 Start/end: {home_name}\n\n\
+         🔗 <b>Open in browser:</b>\n\
+         • <a href=\"{brouter_url}\">BRouter Web</a> (interactive map)\n\
+         • <a href=\"{google_url}\">Google Maps</a> (navigation)\n",
+        s = if store_count == 1 { "" } else { "s" },
+        si = if grocery_count == 1 { "" } else { "s" },
+    );
+
+    // 8. Upload GPX file if we got it
+    match gpx_result {
+        Ok(Ok(gpx)) => {
+            let filename = format!(
+                "errands-{}.gpx",
+                chrono::Utc::now().format("%Y%m%d-%H%M")
+            );
+            let input_file = InputFile::memory(gpx.into_bytes()).file_name(filename);
+            bot.send_document(msg.chat.id, input_file)
+                .caption("📎 GPX route file — open in any map/navigation app")
+                .await?;
+        }
+        Ok(Err(e)) => {
+            text.push_str(&format!("\n⚠️ GPX generation failed: {e}\nUse the links above instead."));
+        }
+        Err(e) => {
+            text.push_str(&format!("\n⚠️ GPX generation failed: {e}\nUse the links above instead."));
+        }
+    }
+
+    // 9. Send the summary with links
+    bot.send_message(msg.chat.id, text)
+        .parse_mode(ParseMode::Html)
+        .link_preview_options(LinkPreviewOptions {
+            is_disabled: true,
+            url: None,
+            prefer_small_media: false,
+            prefer_large_media: false,
+            show_above_text: false,
+        })
+        .await?;
+
+    Ok(())
+}
+
+/// Handle any non-command text message as an AI request.
+async fn handle_ai_message(
+    bot: Bot,
+    msg: Message,
+    db: Arc<Db>,
+    openrouter_api_key: &Option<String>,
+    openrouter_model: &str,
+    conversations: ConversationStore,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let text = match msg.text() {
+        Some(t) if !t.trim().is_empty() => t.trim(),
+        _ => return Ok(()), // ignore empty or non-text messages
+    };
+
+    match openrouter_api_key {
+        Some(key) => {
+            let chat_id = msg.chat.id.0;
+
+            // Expire old conversations before looking up
+            ai::expire_old_conversations(&conversations);
+
+            // Extract existing history (if any) — take it out so we don't hold the lock
+            let history = {
+                let mut store = conversations.lock().unwrap();
+                store.remove(&chat_id).map(|conv| conv.messages)
+            };
+            let is_continuation = history.is_some();
+
+            // Send a "thinking" indicator
+            let thinking = bot
+                .send_message(msg.chat.id, "🤔 Thinking…")
+                .await?;
+
+            match ai::chat(text, history, &db, key, openrouter_model).await {
+                Ok((reply, updated_messages)) => {
+                    // Store the updated conversation history
+                    {
+                        let mut store = conversations.lock().unwrap();
+                        store.insert(chat_id, ai::Conversation {
+                            messages: updated_messages,
+                            last_active: chrono::Utc::now(),
+                        });
+                    }
+
+                    // Delete the "thinking" message
+                    let _ = bot.delete_message(msg.chat.id, thinking.id).await;
+
+                    // Build reply — add a subtle continuation indicator
+                    let display_reply = if is_continuation {
+                        reply // no prefix on continuations to keep it clean
+                    } else {
+                        reply
+                    };
+
+                    // Try Markdown first, fall back to plain text
+                    let send_result = bot
+                        .send_message(msg.chat.id, &display_reply)
+                        .parse_mode(ParseMode::MarkdownV2)
+                        .await;
+                    if send_result.is_err() {
+                        bot.send_message(msg.chat.id, &display_reply).await?;
                     }
                 }
-                None => {
-                    bot.send_message(
-                        msg.chat.id,
-                        "⚠️ AI not configured. Set OPENROUTER_API_KEY or add it to config.",
-                    )
-                    .await?;
+                Err(e) => {
+                    // On error, restore the old history if we had one so the
+                    // user can retry without losing context
+                    // (history was already taken out, nothing to restore here —
+                    //  the conversation is effectively reset on API error)
+
+                    let _ = bot.delete_message(msg.chat.id, thinking.id).await;
+                    bot.send_message(msg.chat.id, format!("❌ AI error: {e}"))
+                        .await?;
                 }
             }
+        }
+        None => {
+            bot.send_message(
+                msg.chat.id,
+                "⚠️ AI not configured. Set OPENROUTER_API_KEY or add it to config.\n\n\
+                 Use /help to see available commands.",
+            )
+            .await?;
         }
     }
 

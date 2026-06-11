@@ -49,7 +49,13 @@ pub async fn run(db: Arc<Db>, bot: Bot) {
             info!("Sending daily digest for {today}");
 
             match db.get_active_chat_ids() {
-                Ok(chat_ids) => {
+                Ok(mut chat_ids) => {
+                    // Also include the default chat if set (for web/MCP-created items)
+                    if let Some(default_cid) = resolve_chat_id(&db, 0) {
+                        if !chat_ids.contains(&default_cid) {
+                            chat_ids.push(default_cid);
+                        }
+                    }
                     for cid in chat_ids {
                         send_daily_digest(&db, &bot, cid).await;
                     }
@@ -62,8 +68,36 @@ pub async fn run(db: Arc<Db>, bot: Bot) {
     }
 }
 
+/// Resolve a chat ID: if the item has chat_id == 0 (created via web/MCP),
+/// fall back to the default_chat_id setting. Returns None if no valid chat.
+fn resolve_chat_id(db: &Db, chat_id: i64) -> Option<i64> {
+    if chat_id != 0 {
+        return Some(chat_id);
+    }
+    // Try to use the default chat ID from settings
+    db.get_setting("default_chat_id")
+        .ok()
+        .flatten()
+        .and_then(|s| s.parse::<i64>().ok())
+        .filter(|id| *id != 0)
+}
+
 async fn fire_reminder(db: &Db, bot: &Bot, reminder: &Reminder) {
-    let chat_id = ChatId(reminder.chat_id);
+    let resolved = match resolve_chat_id(db, reminder.chat_id) {
+        Some(id) => id,
+        None => {
+            // No valid chat to send to — silently skip
+            // (still reschedule/mark fired so it doesn't retry every 30s)
+            if let Some(interval) = reminder.interval_secs {
+                let next = reminder.remind_at + chrono::Duration::seconds(interval);
+                let _ = db.reschedule_reminder(reminder.id, next);
+            } else {
+                let _ = db.mark_reminder_fired(reminder.id);
+            }
+            return;
+        }
+    };
+    let chat_id = ChatId(resolved);
     let periodic_tag = if reminder.interval_secs.is_some() {
         " 🔁"
     } else {

@@ -91,6 +91,12 @@ pub struct GroceryItem {
     /// Urgency: 1 (low) to 5 (critical)
     pub priority: i32,
     pub bought: bool,
+    /// Latitude resolved from where_to_buy (via geocoding or direct coordinates)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lat: Option<f64>,
+    /// Longitude resolved from where_to_buy (via geocoding or direct coordinates)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lon: Option<f64>,
     pub created_at: DateTime<Utc>,
 }
 

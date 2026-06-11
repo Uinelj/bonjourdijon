@@ -92,6 +92,20 @@ impl Db {
         // Add followups JSON column to chores
         let _ = conn.execute_batch("ALTER TABLE chores ADD COLUMN followups TEXT;");
 
+        // Add geocoding columns to groceries
+        let _ = conn.execute_batch(
+            "ALTER TABLE groceries ADD COLUMN lat REAL;
+             ALTER TABLE groceries ADD COLUMN lon REAL;",
+        );
+
+        // General key-value settings table (for user location, etc.)
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );",
+        )?;
+
         // ── Chore definitions (schedule ↔ instance split) ─────────────
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS chore_definitions (
@@ -791,14 +805,16 @@ impl Db {
         item: &str,
         where_to_buy: Option<&str>,
         priority: i32,
+        lat: Option<f64>,
+        lon: Option<f64>,
     ) -> rusqlite::Result<GroceryItem> {
         let now = Utc::now();
         let prio = priority.clamp(1, 5);
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO groceries (item, where_to_buy, priority, bought, created_at)
-             VALUES (?1, ?2, ?3, 0, ?4)",
-            params![item, where_to_buy, prio, now.to_rfc3339()],
+            "INSERT INTO groceries (item, where_to_buy, priority, bought, lat, lon, created_at)
+             VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6)",
+            params![item, where_to_buy, prio, lat, lon, now.to_rfc3339()],
         )?;
         let id = conn.last_insert_rowid();
         Ok(GroceryItem {
@@ -807,6 +823,8 @@ impl Db {
             where_to_buy: where_to_buy.map(|s| s.to_string()),
             priority: prio,
             bought: false,
+            lat,
+            lon,
             created_at: now,
         })
     }
@@ -814,7 +832,7 @@ impl Db {
     pub fn get_grocery(&self, id: i64) -> rusqlite::Result<Option<GroceryItem>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, item, where_to_buy, priority, bought, created_at
+            "SELECT id, item, where_to_buy, priority, bought, lat, lon, created_at
              FROM groceries WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], Self::row_to_grocery)?;
@@ -828,10 +846,10 @@ impl Db {
     pub fn list_groceries(&self, only_pending: bool) -> rusqlite::Result<Vec<GroceryItem>> {
         let conn = self.conn.lock().unwrap();
         let sql = if only_pending {
-            "SELECT id, item, where_to_buy, priority, bought, created_at
+            "SELECT id, item, where_to_buy, priority, bought, lat, lon, created_at
              FROM groceries WHERE bought = 0 ORDER BY priority DESC, id ASC"
         } else {
-            "SELECT id, item, where_to_buy, priority, bought, created_at
+            "SELECT id, item, where_to_buy, priority, bought, lat, lon, created_at
              FROM groceries ORDER BY priority DESC, id ASC"
         };
         let mut stmt = conn.prepare(sql)?;
@@ -845,6 +863,8 @@ impl Db {
         item: Option<&str>,
         where_to_buy: Option<Option<&str>>,
         priority: Option<i32>,
+        lat: Option<Option<f64>>,
+        lon: Option<Option<f64>>,
     ) -> rusqlite::Result<bool> {
         let conn = self.conn.lock().unwrap();
         let mut sets = Vec::new();
@@ -860,6 +880,14 @@ impl Db {
         if let Some(p) = priority {
             sets.push("priority = ?");
             values.push(Box::new(p.clamp(1, 5)));
+        }
+        if let Some(la) = lat {
+            sets.push("lat = ?");
+            values.push(Box::new(la));
+        }
+        if let Some(lo) = lon {
+            sets.push("lon = ?");
+            values.push(Box::new(lo));
         }
         if sets.is_empty() {
             return Ok(false);
@@ -901,8 +929,38 @@ impl Db {
             where_to_buy: row.get(2)?,
             priority: row.get(3)?,
             bought: row.get::<_, i32>(4)? != 0,
-            created_at: parse_dt(row.get::<_, String>(5)?),
+            lat: row.get(5)?,
+            lon: row.get(6)?,
+            created_at: parse_dt(row.get::<_, String>(7)?),
         })
+    }
+
+    // ─── Settings (key-value store) ────────────────────────────────────
+
+    pub fn get_setting(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT value FROM settings WHERE key = ?1")?;
+        let mut rows = stmt.query_map(params![key], |row| row.get(0))?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_setting(&self, key: &str) -> rusqlite::Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        Ok(deleted > 0)
     }
 
     // ─── Events ───────────────────────────────────────────────────────

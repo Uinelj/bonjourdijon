@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     Form, Json, Router,
     extract::{Path, Query, State},
-    response::{Html, Redirect},
+    response::{Html, IntoResponse, Redirect},
     routing::{get, post},
 };
 use chrono::{Datelike, NaiveDate, NaiveTime, TimeZone, Utc};
@@ -40,11 +40,15 @@ pub fn router(db: Arc<Db>, tera: Tera) -> Router {
         .route("/lists/{name}/{id}/remove", post(remove_list_item))
         .route("/groceries", get(groceries_page))
         .route("/groceries", post(add_grocery))
+        .route("/groceries/map", get(groceries_map_page))
+        .route("/groceries/route.gpx", get(groceries_gpx_route))
         .route("/groceries/{id}/bought", post(mark_grocery_bought))
         .route("/groceries/{id}/remove", post(remove_grocery))
         .route("/calendar", get(calendar_page))
         .route("/events", post(create_event))
         .route("/events/{id}/delete", post(delete_event))
+        .route("/settings", get(settings_page))
+        .route("/settings", post(save_settings))
         .route("/mcp", post(mcp_handler))
         .nest_service("/static", ServeDir::new("static"))
         .with_state(state)
@@ -440,7 +444,12 @@ async fn add_grocery(
 ) -> Redirect {
     let where_to_buy = form.where_to_buy.as_deref().filter(|s| !s.is_empty());
     let priority = form.priority.unwrap_or(3);
-    let _ = state.db.add_grocery(&form.item, where_to_buy, priority);
+    // Try to geocode the location if provided
+    let (lat, lon) = where_to_buy
+        .and_then(crate::geo::resolve_location)
+        .map(|(la, lo)| (Some(la), Some(lo)))
+        .unwrap_or((None, None));
+    let _ = state.db.add_grocery(&form.item, where_to_buy, priority, lat, lon);
     Redirect::to("/groceries")
 }
 
@@ -458,6 +467,225 @@ async fn remove_grocery(
 ) -> Redirect {
     let _ = state.db.delete_grocery(id);
     Redirect::to("/groceries")
+}
+
+// ─── Grocery Map ──────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct MapStoreView {
+    name: String,
+    lat: f64,
+    lon: f64,
+    max_priority: i32,
+    items: Vec<MapItemView>,
+}
+
+#[derive(Serialize)]
+struct MapItemView {
+    id: i64,
+    item: String,
+    priority: i32,
+}
+
+#[derive(Serialize)]
+struct MapGroceryJson {
+    id: i64,
+    item: String,
+    where_to_buy: Option<String>,
+    priority: i32,
+    lat: f64,
+    lon: f64,
+}
+
+async fn groceries_map_page(State(state): State<AppState>) -> Html<String> {
+    let items = state.db.list_groceries(true).unwrap_or_default();
+    let total_pending = items.len();
+
+    // Filter to items with coordinates
+    let geo_items: Vec<_> = items
+        .iter()
+        .filter(|g| g.lat.is_some() && g.lon.is_some())
+        .collect();
+
+    // Build JSON for Leaflet markers
+    let items_json: Vec<MapGroceryJson> = geo_items
+        .iter()
+        .map(|g| MapGroceryJson {
+            id: g.id,
+            item: g.item.clone(),
+            where_to_buy: g.where_to_buy.clone(),
+            priority: g.priority,
+            lat: g.lat.unwrap(),
+            lon: g.lon.unwrap(),
+        })
+        .collect();
+
+    // Group by coordinate proximity (~100m radius = 0.001° ≈ 111m)
+    // Items within ~100m of each other are treated as the same store.
+    let mut stores: Vec<MapStoreView> = Vec::new();
+    for g in &geo_items {
+        let glat = g.lat.unwrap();
+        let glon = g.lon.unwrap();
+        // Clean up store name: strip "[lat, lon]" bracket suffix if present
+        let raw_name = g.where_to_buy.as_deref().unwrap_or("Unknown");
+        let clean_name = crate::geo::parse_bracketed_coordinates(raw_name)
+            .map(|(name, _, _)| name)
+            .unwrap_or_else(|| raw_name.to_string());
+
+        // Find an existing cluster within ~100m
+        let cluster = stores.iter_mut().find(|s| {
+            (s.lat - glat).abs() < 0.001 && (s.lon - glon).abs() < 0.001
+        });
+        match cluster {
+            Some(store) => {
+                store.max_priority = store.max_priority.max(g.priority);
+                store.items.push(MapItemView {
+                    id: g.id,
+                    item: g.item.clone(),
+                    priority: g.priority,
+                });
+            }
+            None => {
+                stores.push(MapStoreView {
+                    name: clean_name,
+                    lat: glat,
+                    lon: glon,
+                    max_priority: g.priority,
+                    items: vec![MapItemView {
+                        id: g.id,
+                        item: g.item.clone(),
+                        priority: g.priority,
+                    }],
+                });
+            }
+        }
+    }
+
+    // User home location
+    let home_json = state
+        .db
+        .get_setting("user_location")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| r#"{"lat":null,"lon":null,"name":null}"#.to_string());
+    let has_home = !home_json.contains("null");
+
+    // Build Google Maps navigation URL if we have home + store waypoints
+    let google_maps_url = if has_home && !stores.is_empty() {
+        let home: serde_json::Value = serde_json::from_str(&home_json).unwrap_or_default();
+        let home_lat = home.get("lat").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let home_lon = home.get("lon").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let home_point = (home_lat, home_lon);
+
+        let store_points: Vec<(f64, f64)> = stores.iter().map(|s| (s.lat, s.lon)).collect();
+        let ordered = crate::geo::nearest_neighbour_order(home_point, &store_points);
+
+        let mut waypoints = vec![home_point];
+        waypoints.extend_from_slice(&ordered);
+        waypoints.push(home_point);
+
+        Some(crate::geo::google_maps_directions_url(&waypoints, "walking"))
+    } else {
+        None
+    };
+
+    let items_json_str =
+        serde_json::to_string(&items_json).unwrap_or_else(|_| "[]".to_string());
+
+    let mut ctx = Context::new();
+    ctx.insert("geo_item_count", &geo_items.len());
+    ctx.insert("total_pending", &total_pending);
+    ctx.insert("stores", &stores);
+    ctx.insert("items_json", &items_json_str);
+    ctx.insert("home_json", &home_json);
+    ctx.insert("has_home", &has_home);
+    ctx.insert("google_maps_url", &google_maps_url);
+
+    let html = state
+        .tera
+        .render("groceries_map.html", &ctx)
+        .unwrap_or_else(|e| format!("Template error: {e}"));
+    Html(html)
+}
+
+// ─── GPX Route Download ───────────────────────────────────────────────
+
+async fn groceries_gpx_route(State(state): State<AppState>) -> impl IntoResponse {
+    // Get user home location
+    let home_json = match state.db.get_setting("user_location").ok().flatten() {
+        Some(h) => h,
+        None => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                [("content-type", "text/plain")],
+                "User location not set. Set it via the MCP set_user_location tool first.".to_string(),
+            );
+        }
+    };
+    let home: serde_json::Value = match serde_json::from_str(&home_json) {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                [("content-type", "text/plain")],
+                "Invalid user location data.".to_string(),
+            );
+        }
+    };
+    let home_lat = home.get("lat").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let home_lon = home.get("lon").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+    if home_lat == 0.0 && home_lon == 0.0 {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            [("content-type", "text/plain")],
+            "User location not set or invalid.".to_string(),
+        );
+    }
+
+    // Get pending groceries with coordinates
+    let items = state.db.list_groceries(true).unwrap_or_default();
+    let store_points: Vec<(f64, f64)> = {
+        let mut points = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for g in &items {
+            if let (Some(lat), Some(lon)) = (g.lat, g.lon) {
+                let key = ((lat * 10000.0).round() as i64, (lon * 10000.0).round() as i64);
+                if seen.insert(key) {
+                    points.push((lat, lon));
+                }
+            }
+        }
+        points
+    };
+
+    if store_points.is_empty() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            [("content-type", "text/plain")],
+            "No grocery items with coordinates found.".to_string(),
+        );
+    }
+
+    let home_point = (home_lat, home_lon);
+    let ordered = crate::geo::nearest_neighbour_order(home_point, &store_points);
+
+    let mut waypoints = vec![home_point];
+    waypoints.extend_from_slice(&ordered);
+    waypoints.push(home_point);
+
+    match crate::geo::plan_route_gpx_blocking(&waypoints, "trekking") {
+        Ok(gpx) => (
+            axum::http::StatusCode::OK,
+            [("content-type", "application/gpx+xml")],
+            gpx,
+        ),
+        Err(e) => (
+            axum::http::StatusCode::BAD_GATEWAY,
+            [("content-type", "text/plain")],
+            format!("Route planning failed: {e}"),
+        ),
+    }
 }
 
 // ─── Calendar ─────────────────────────────────────────────────────────
@@ -701,4 +929,122 @@ async fn delete_event(
 ) -> Redirect {
     let _ = state.db.delete_event(id);
     Redirect::to("/calendar")
+}
+
+// ─── Settings ─────────────────────────────────────────────────────────
+
+async fn settings_page(State(state): State<AppState>) -> Html<String> {
+    // Load current user location
+    let (loc_name, loc_lat, loc_lon) = match state.db.get_setting("user_location").ok().flatten() {
+        Some(json_str) => {
+            let v: serde_json::Value = serde_json::from_str(&json_str).unwrap_or_default();
+            (
+                v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                v.get("lat").and_then(|n| n.as_f64()),
+                v.get("lon").and_then(|n| n.as_f64()),
+            )
+        }
+        None => (String::new(), None, None),
+    };
+
+    let has_location = loc_lat.is_some() && loc_lon.is_some();
+
+    let mut ctx = Context::new();
+    ctx.insert("loc_name", &loc_name);
+    ctx.insert("loc_lat", &loc_lat.map(|v| format!("{v:.6}")).unwrap_or_default());
+    ctx.insert("loc_lon", &loc_lon.map(|v| format!("{v:.6}")).unwrap_or_default());
+    ctx.insert("has_location", &has_location);
+
+    let html = state
+        .tera
+        .render("settings.html", &ctx)
+        .unwrap_or_else(|e| format!("Template error: {e}"));
+    Html(html)
+}
+
+#[derive(Deserialize)]
+pub struct SaveSettingsForm {
+    location_query: Option<String>,
+    lat: Option<String>,
+    lon: Option<String>,
+}
+
+async fn save_settings(
+    State(state): State<AppState>,
+    Form(form): Form<SaveSettingsForm>,
+) -> Html<String> {
+    let mut message = String::new();
+    let mut is_error = false;
+
+    // Determine location: prefer lat/lon if both provided, else geocode the query
+    let lat_str = form.lat.as_deref().unwrap_or("").trim().to_string();
+    let lon_str = form.lon.as_deref().unwrap_or("").trim().to_string();
+    let query = form.location_query.as_deref().unwrap_or("").trim().to_string();
+
+    let resolved: Option<(f64, f64, String)> = if !lat_str.is_empty() && !lon_str.is_empty() {
+        // Manual coordinates
+        match (lat_str.parse::<f64>(), lon_str.parse::<f64>()) {
+            (Ok(la), Ok(lo)) if (-90.0..=90.0).contains(&la) && (-180.0..=180.0).contains(&lo) => {
+                let name = if query.is_empty() { format!("{la:.4}, {lo:.4}") } else { query.clone() };
+                Some((la, lo, name))
+            }
+            _ => {
+                message = "Invalid coordinates. Latitude must be -90..90, longitude -180..180.".into();
+                is_error = true;
+                None
+            }
+        }
+    } else if !query.is_empty() {
+        // Geocode the place name
+        match crate::geo::geocode_blocking(&query) {
+            Ok((la, lo, display_name)) => Some((la, lo, display_name)),
+            Err(e) => {
+                message = format!("Could not find location: {e}");
+                is_error = true;
+                None
+            }
+        }
+    } else {
+        message = "Enter a place name or coordinates.".into();
+        is_error = true;
+        None
+    };
+
+    if let Some((lat, lon, name)) = resolved {
+        let location_json = serde_json::json!({
+            "lat": lat,
+            "lon": lon,
+            "name": name,
+        });
+        let _ = state.db.set_setting("user_location", &location_json.to_string());
+        message = format!("📍 Location set to: {} ({:.5}, {:.5})", name, lat, lon);
+    }
+
+    // Re-render settings page with feedback
+    let (loc_name, loc_lat, loc_lon) = match state.db.get_setting("user_location").ok().flatten() {
+        Some(json_str) => {
+            let v: serde_json::Value = serde_json::from_str(&json_str).unwrap_or_default();
+            (
+                v.get("name").and_then(|n| n.as_str()).unwrap_or("").to_string(),
+                v.get("lat").and_then(|n| n.as_f64()),
+                v.get("lon").and_then(|n| n.as_f64()),
+            )
+        }
+        None => (String::new(), None, None),
+    };
+    let has_location = loc_lat.is_some() && loc_lon.is_some();
+
+    let mut ctx = Context::new();
+    ctx.insert("loc_name", &loc_name);
+    ctx.insert("loc_lat", &loc_lat.map(|v| format!("{v:.6}")).unwrap_or_default());
+    ctx.insert("loc_lon", &loc_lon.map(|v| format!("{v:.6}")).unwrap_or_default());
+    ctx.insert("has_location", &has_location);
+    ctx.insert("message", &message);
+    ctx.insert("is_error", &is_error);
+
+    let html = state
+        .tera
+        .render("settings.html", &ctx)
+        .unwrap_or_else(|e| format!("Template error: {e}"));
+    Html(html)
 }

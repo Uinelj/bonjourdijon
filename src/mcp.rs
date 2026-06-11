@@ -499,6 +499,60 @@ pub fn get_tools_json() -> Value {
             }
         },
 
+        // ── Geo / Location ──────────────────────────────────
+        {
+            "name": "set_user_location",
+            "description": "Set the user's home/current location for errand route planning. Pass either lat/lon coordinates or a place name that will be geocoded via OpenStreetMap.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "lat": { "type": "number", "description": "Latitude (alternative to name)" },
+                    "lon": { "type": "number", "description": "Longitude (alternative to name)" },
+                    "name": { "type": "string", "description": "Place name to geocode, e.g. 'Place de la République, Dijon' (alternative to lat/lon)" }
+                },
+                "required": []
+            }
+        },
+        {
+            "name": "get_user_location",
+            "description": "Get the saved user home/current location (lat, lon, name). Returns null fields if not yet set.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        },
+        {
+            "name": "geocode_location",
+            "description": "Resolve a place name or address to geographic coordinates using OpenStreetMap Nominatim. Returns lat, lon, and the resolved display name. Useful for verifying what a vague query resolves to before saving it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string", "description": "Place name or address to geocode (e.g. 'Ikea Dijon', '21 rue de la Liberté, Dijon')" }
+                },
+                "required": ["query"]
+            }
+        },
+        {
+            "name": "plan_errand_route",
+            "description": "Plan a walking or cycling errand route visiting grocery stores. Starts and ends at the user's saved home location. Returns GPX XML data that can be loaded into any GPS/mapping app. Waypoints are ordered using a nearest-neighbour heuristic for an efficient route. Uses BRouter (OpenStreetMap-based) for real road/path routing.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "grocery_ids": {
+                        "type": "array",
+                        "items": { "type": "integer" },
+                        "description": "Grocery item IDs to visit. If empty or omitted, uses all pending (not bought) grocery items that have coordinates."
+                    },
+                    "profile": {
+                        "type": "string",
+                        "description": "BRouter routing profile: 'trekking' (walking, default), 'safety' (safe cycling), 'fastbike' (fast cycling)."
+                    }
+                },
+                "required": []
+            }
+        },
+
         // ── Agenda / Dashboard ─────────────────────────────
         {
             "name": "get_agenda",
@@ -574,6 +628,11 @@ pub fn call_tool(name: &str, arguments: &Value, db: &Db) -> Result<String, Strin
         "mark_grocery_bought" => tool_mark_grocery_bought(db, arguments),
         "delete_grocery" => tool_delete_grocery(db, arguments),
         "clear_bought_groceries" => tool_clear_bought_groceries(db),
+        // Geo / Location
+        "set_user_location" => tool_set_user_location(db, arguments),
+        "get_user_location" => tool_get_user_location(db),
+        "geocode_location" => tool_geocode_location(arguments),
+        "plan_errand_route" => tool_plan_errand_route(db, arguments),
         // Dashboard
         "get_agenda" => tool_get_agenda(db),
         "whats_on_our_plate" => tool_whats_on_our_plate(db),
@@ -997,6 +1056,175 @@ fn tool_delete_event(db: &Db, args: &Value) -> Result<String, String> {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+//  Geo / Location tools
+// ═══════════════════════════════════════════════════════════════════════
+
+fn tool_set_user_location(db: &Db, args: &Value) -> Result<String, String> {
+    let lat = args.get("lat").and_then(|v| v.as_f64());
+    let lon = args.get("lon").and_then(|v| v.as_f64());
+    let name = args.get("name").and_then(|v| v.as_str());
+
+    let (final_lat, final_lon, display_name) = match (lat, lon, name) {
+        (Some(la), Some(lo), _) => {
+            let label = name.unwrap_or("Home").to_string();
+            (la, lo, label)
+        }
+        (_, _, Some(place_name)) => {
+            let (la, lo, resolved) = crate::geo::geocode_blocking(place_name)?;
+            (la, lo, resolved)
+        }
+        _ => return Err("Provide either lat+lon or a place name.".to_string()),
+    };
+
+    let location_json = json!({
+        "lat": final_lat,
+        "lon": final_lon,
+        "name": display_name,
+    });
+    db.set_setting("user_location", &location_json.to_string())
+        .map_err(|e| e.to_string())?;
+
+    Ok(format!(
+        "User location set to: {} ({:.5}, {:.5})",
+        display_name, final_lat, final_lon
+    ))
+}
+
+fn tool_get_user_location(db: &Db) -> Result<String, String> {
+    match db.get_setting("user_location").map_err(|e| e.to_string())? {
+        Some(val) => Ok(val),
+        None => Ok(json!({
+            "lat": null,
+            "lon": null,
+            "name": null,
+            "message": "User location not set. Use set_user_location to configure it."
+        }).to_string()),
+    }
+}
+
+fn tool_geocode_location(args: &Value) -> Result<String, String> {
+    let query = args
+        .get("query")
+        .and_then(|q| q.as_str())
+        .ok_or("Missing required field: query")?;
+
+    let (lat, lon, display_name) = crate::geo::geocode_blocking(query)?;
+
+    let result = json!({
+        "lat": lat,
+        "lon": lon,
+        "display_name": display_name,
+        "query": query,
+    });
+    serde_json::to_string_pretty(&result).map_err(|e| e.to_string())
+}
+
+fn tool_plan_errand_route(db: &Db, args: &Value) -> Result<String, String> {
+    // 1. Get user home location
+    let home_json = db.get_setting("user_location").map_err(|e| e.to_string())?
+        .ok_or("User location not set. Use set_user_location first.")?;
+    let home: Value = serde_json::from_str(&home_json)
+        .map_err(|e| format!("Invalid user location data: {e}"))?;
+    let home_lat = home.get("lat").and_then(|v| v.as_f64())
+        .ok_or("User location missing lat.")?;
+    let home_lon = home.get("lon").and_then(|v| v.as_f64())
+        .ok_or("User location missing lon.")?;
+
+    // 2. Get grocery waypoints
+    let grocery_ids: Vec<i64> = args
+        .get("grocery_ids")
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
+        .unwrap_or_default();
+
+    let items = if grocery_ids.is_empty() {
+        // All pending groceries with coordinates
+        db.list_groceries(true)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|g| g.lat.is_some() && g.lon.is_some())
+            .collect::<Vec<_>>()
+    } else {
+        let mut result = Vec::new();
+        for gid in &grocery_ids {
+            if let Some(g) = db.get_grocery(*gid).map_err(|e| e.to_string())? {
+                if g.lat.is_some() && g.lon.is_some() {
+                    result.push(g);
+                }
+            }
+        }
+        result
+    };
+
+    if items.is_empty() {
+        return Err("No grocery items with coordinates found. Add locations to grocery items first.".to_string());
+    }
+
+    let profile = args
+        .get("profile")
+        .and_then(|v| v.as_str())
+        .unwrap_or("trekking");
+
+    // 3. Collect unique store waypoints (deduplicate by rounded coords)
+    let mut store_points: Vec<(f64, f64)> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for g in &items {
+        if let (Some(lat), Some(lon)) = (g.lat, g.lon) {
+            // Round to ~10m precision for dedup
+            let key = (
+                (lat * 10000.0).round() as i64,
+                (lon * 10000.0).round() as i64,
+            );
+            if seen.insert(key) {
+                store_points.push((lat, lon));
+            }
+        }
+    }
+
+    // 4. Order waypoints using nearest-neighbour heuristic
+    let home_point = (home_lat, home_lon);
+    let ordered = crate::geo::nearest_neighbour_order(home_point, &store_points);
+
+    // 5. Build full route: home → stores → home
+    let mut waypoints = vec![home_point];
+    waypoints.extend_from_slice(&ordered);
+    waypoints.push(home_point);
+
+    // 6. Call BRouter for GPX
+    let gpx = crate::geo::plan_route_gpx_blocking(&waypoints, profile)?;
+
+    // 7. Build Google Maps navigation URL
+    let gmaps_mode = match profile {
+        "fastbike" | "safety" => "bicycling",
+        "trekking" => "walking",
+        _ => "walking",
+    };
+    let google_maps_url = crate::geo::google_maps_directions_url(&waypoints, gmaps_mode);
+
+    // 8. Return GPX with metadata
+    let store_names: Vec<String> = items
+        .iter()
+        .filter_map(|g| g.where_to_buy.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let result = json!({
+        "profile": profile,
+        "waypoint_count": waypoints.len(),
+        "stores_visited": store_names,
+        "grocery_items": items.iter().map(|g| json!({
+            "id": g.id,
+            "item": g.item,
+            "where_to_buy": g.where_to_buy,
+        })).collect::<Vec<_>>(),
+        "google_maps_url": google_maps_url,
+        "gpx": gpx,
+    });
+    serde_json::to_string_pretty(&result).map_err(|e| e.to_string())
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 //  Dashboard / Agenda
 // ═══════════════════════════════════════════════════════════════════════
 
@@ -1078,8 +1306,15 @@ fn tool_add_grocery(db: &Db, args: &Value) -> Result<String, String> {
     let item = args.get("item").and_then(|i| i.as_str()).ok_or("Missing required field: item")?;
     let where_to_buy = args.get("where_to_buy").and_then(|w| w.as_str());
     let priority = args.get("priority").and_then(|p| p.as_i64()).unwrap_or(3) as i32;
+
+    // Resolve location to coordinates if where_to_buy is provided
+    let (lat, lon) = where_to_buy
+        .and_then(crate::geo::resolve_location)
+        .map(|(la, lo)| (Some(la), Some(lo)))
+        .unwrap_or((None, None));
+
     let grocery = db
-        .add_grocery(item, where_to_buy, priority)
+        .add_grocery(item, where_to_buy, priority, lat, lon)
         .map_err(|e| e.to_string())?;
     serde_json::to_string_pretty(&grocery).map_err(|e| e.to_string())
 }
@@ -1098,8 +1333,19 @@ fn tool_update_grocery(db: &Db, args: &Value) -> Result<String, String> {
     };
     let priority = args.get("priority").and_then(|p| p.as_i64()).map(|p| p as i32);
 
+    // If where_to_buy is being updated, re-geocode. If cleared (null), clear coords.
+    let (lat, lon) = match &where_to_buy {
+        Some(Some(loc)) => {
+            crate::geo::resolve_location(loc)
+                .map(|(la, lo)| (Some(Some(la)), Some(Some(lo))))
+                .unwrap_or((Some(None), Some(None)))
+        }
+        Some(None) => (Some(None), Some(None)), // clearing location clears coords
+        None => (None, None), // not updating location, don't touch coords
+    };
+
     let updated = db
-        .update_grocery(id, item, where_to_buy, priority)
+        .update_grocery(id, item, where_to_buy, priority, lat, lon)
         .map_err(|e| e.to_string())?;
 
     if updated {

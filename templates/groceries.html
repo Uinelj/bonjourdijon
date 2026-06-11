@@ -3,7 +3,10 @@
 {% block title %}Groceries — BonjourDijon{% endblock %}
 
 {% block content %}
-<h1>🛒 Grocery List</h1>
+<div style="display: flex; justify-content: space-between; align-items: center;">
+    <h1>🛒 Grocery List</h1>
+    <a href="/groceries/map" class="btn">📍 Map View</a>
+</div>
 
 <section class="card">
     <h2>Add an item</h2>
@@ -44,7 +47,12 @@
             {% for g in items %}
             <tr class="{% if g.bought %}done-row{% endif %}">
                 <td>{{ g.item }}</td>
-                <td>{{ g.where_to_buy | default(value="-") }}</td>
+                <td>
+                    {{ g.where_to_buy | default(value="-") }}
+                    {% if g.lat and g.lon %}
+                        <span title="Coordinates: {{ g.lat }}, {{ g.lon }}">📍</span>
+                    {% endif %}
+                </td>
                 <td>
                     {% if g.priority >= 4 %}
                         <span class="prio-pill prio-high">High</span>
