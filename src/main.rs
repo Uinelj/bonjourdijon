@@ -130,9 +130,10 @@ async fn run_serve(db: Arc<db::Db>, cfg: &config::Config) {
         let bot_db = db.clone();
         let or_key = cfg.openrouter_api_key.clone();
         let or_model = cfg.openrouter_model.clone();
+        let allowed_users = cfg.telegram_allowed_users.clone();
         let bot_handle = tokio::spawn(async move {
             info!("Telegram bot started");
-            bot::run(bot, bot_db, or_key, or_model).await;
+            bot::run(bot, bot_db, or_key, or_model, allowed_users).await;
         });
 
         tokio::select! {

@@ -5,10 +5,45 @@ use teloxide::prelude::*;
 use teloxide::types::{InputFile, LinkPreviewOptions, ParseMode};
 use teloxide::utils::command::BotCommands;
 
+use log::warn;
+
 use crate::ai::{self, ConversationStore};
 use crate::db::Db;
 use crate::parser;
 use crate::recurrence;
+
+/// Allowed Telegram users (user IDs as strings and/or lowercase @usernames).
+/// Empty = open to everyone.
+type AllowList = Arc<Vec<String>>;
+
+/// Check whether a Telegram message sender is authorized.
+/// Returns `true` if the allow list is empty (open) or the user
+/// matches by numeric ID or @username.
+fn is_authorized(allow_list: &[String], msg: &Message) -> bool {
+    if allow_list.is_empty() {
+        return true;
+    }
+    let user = match msg.from.as_ref() {
+        Some(u) => u,
+        None => return false,
+    };
+    // Check numeric user ID
+    let uid_str = user.id.0.to_string();
+    if allow_list.iter().any(|a| *a == uid_str) {
+        return true;
+    }
+    // Check @username (case-insensitive; list is already lowercased)
+    if let Some(ref uname) = user.username {
+        let lower = uname.to_lowercase();
+        if allow_list
+            .iter()
+            .any(|a| *a == lower || *a == format!("@{lower}"))
+        {
+            return true;
+        }
+    }
+    false
+}
 
 #[derive(BotCommands, Clone)]
 #[command(
@@ -58,21 +93,39 @@ pub enum Command {
     New,
 }
 
-pub async fn run(bot: Bot, db: Arc<Db>, openrouter_api_key: Option<String>, openrouter_model: String) {
+pub async fn run(
+    bot: Bot,
+    db: Arc<Db>,
+    openrouter_api_key: Option<String>,
+    openrouter_model: String,
+    allowed_users: Vec<String>,
+) {
     // Register bot profile & command menu in Telegram
     setup_bot_profile(&bot).await;
 
     let or_key = Arc::new(openrouter_api_key);
     let or_model = Arc::new(openrouter_model);
     let conversations = ai::new_conversation_store();
+    let allow_list: AllowList = Arc::new(allowed_users);
+
+    if allow_list.is_empty() {
+        log::info!("Telegram bot: open to all users (no allow-list configured)");
+    } else {
+        log::info!(
+            "Telegram bot: restricted to {} allowed user(s)",
+            allow_list.len()
+        );
+    }
 
     // Clone for the two handler branches
     let db_cmd = db.clone();
     let convs_cmd = conversations.clone();
+    let allow_cmd = allow_list.clone();
     let db_ai = db.clone();
     let or_key_ai = or_key.clone();
     let or_model_ai = or_model.clone();
     let convs_ai = conversations.clone();
+    let allow_ai = allow_list.clone();
 
     // Branch: try /commands first, then fall through to plain-text → AI
     let handler = Update::filter_message().branch(
@@ -82,7 +135,21 @@ pub async fn run(bot: Bot, db: Arc<Db>, openrouter_api_key: Option<String>, open
             .endpoint(move |bot: Bot, msg: Message, cmd: Command| {
                 let db = db_cmd.clone();
                 let convs = convs_cmd.clone();
+                let allow = allow_cmd.clone();
                 async move {
+                    if !is_authorized(&allow, &msg) {
+                        warn!(
+                            "Unauthorized access attempt from user {:?} (@{})",
+                            msg.from.as_ref().map(|u| u.id.0),
+                            msg.from
+                                .as_ref()
+                                .and_then(|u| u.username.as_deref())
+                                .unwrap_or("?")
+                        );
+                        bot.send_message(msg.chat.id, "🔒 Sorry, you're not authorized to use this bot.")
+                            .await?;
+                        return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
+                    }
                     handle_command(bot, msg, cmd, db, convs).await?;
                     Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
                 }
@@ -95,7 +162,12 @@ pub async fn run(bot: Bot, db: Arc<Db>, openrouter_api_key: Option<String>, open
                 let or_key = or_key_ai.clone();
                 let or_model = or_model_ai.clone();
                 let convs = convs_ai.clone();
+                let allow = allow_ai.clone();
                 async move {
+                    if !is_authorized(&allow, &msg) {
+                        // Silent ignore for non-command messages from strangers
+                        return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
+                    }
                     handle_ai_message(bot, msg, db, &or_key, &or_model, convs).await?;
                     Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
                 }

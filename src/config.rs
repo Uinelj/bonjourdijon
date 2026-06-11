@@ -19,6 +19,9 @@ pub struct FileConfig {
 #[serde(default)]
 pub struct TelegramConfig {
     pub token: Option<String>,
+    /// Allowed Telegram user IDs or @usernames.
+    /// If empty, the bot is open to everyone.
+    pub allowed_users: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -29,7 +32,7 @@ pub struct OpenRouterConfig {
 }
 
 /// Resolved config after merging: CLI > env > file > defaults.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub db: String,
     pub port: u16,
@@ -38,6 +41,9 @@ pub struct Config {
     pub telegram_token: Option<String>,
     pub openrouter_api_key: Option<String>,
     pub openrouter_model: String,
+    /// Allowed Telegram user IDs or @usernames (case-insensitive).
+    /// Empty = open to everyone.
+    pub telegram_allowed_users: Vec<String>,
 }
 
 impl Config {
@@ -94,6 +100,20 @@ impl Config {
             .or(file_cfg.openrouter.model)
             .unwrap_or_else(|| "google/gemini-2.0-flash-exp:free".to_string());
 
+        // Allowed users: env > file.  Env is comma-separated.
+        let telegram_allowed_users = std::env::var("TELEGRAM_ALLOWED_USERS")
+            .ok()
+            .map(|s| {
+                s.split(',')
+                    .map(|u| u.trim().to_string())
+                    .filter(|u| !u.is_empty())
+                    .collect()
+            })
+            .unwrap_or(file_cfg.telegram.allowed_users)
+            .into_iter()
+            .map(|u| u.to_lowercase())
+            .collect();
+
         Config {
             db,
             port,
@@ -102,6 +122,7 @@ impl Config {
             telegram_token,
             openrouter_api_key,
             openrouter_model,
+            telegram_allowed_users,
         }
     }
 }
