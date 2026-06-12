@@ -540,9 +540,10 @@ mod test_db {
         /// Roll over overdue undone chores to tomorrow 09:00 UTC.
         pub fn rollover_overdue_chores(&self) -> usize {
             use chrono::{NaiveTime, TimeZone};
-            let tomorrow_9am = (Utc::now().date_naive() + chrono::Duration::days(1))
+            let today_9am = Utc::now()
+                .date_naive()
                 .and_time(NaiveTime::from_hms_opt(9, 0, 0).unwrap());
-            let tomorrow = Utc.from_utc_datetime(&tomorrow_9am);
+            let today_9am_utc = Utc.from_utc_datetime(&today_9am);
             let today_start = Utc.from_utc_datetime(
                 &Utc::now()
                     .date_naive()
@@ -551,7 +552,7 @@ mod test_db {
             let conn = self.conn.lock().unwrap();
             conn.execute(
                 "UPDATE chores SET due_at = ?1 WHERE done = 0 AND due_at IS NOT NULL AND due_at < ?2",
-                params![tomorrow.to_rfc3339(), today_start.to_rfc3339()],
+                params![today_9am_utc.to_rfc3339(), today_start.to_rfc3339()],
             )
             .unwrap()
         }
@@ -1033,11 +1034,12 @@ fn test_rollover_overdue_chores() {
     let rolled = db.rollover_overdue_chores();
     assert_eq!(rolled, 1); // only the one overdue undone chore
 
-    // Overdue chore moved to tomorrow 09:00
+    // Overdue chore moved to today 09:00 (so it shows up in today's list)
     let new_due = db.get_due_at(overdue_id).expect("should have due_at");
-    let tomorrow_9am = (Utc::now().date_naive() + Duration::days(1))
+    let today_9am = Utc::now()
+        .date_naive()
         .and_time(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap());
-    let expected = Utc.from_utc_datetime(&tomorrow_9am);
+    let expected = Utc.from_utc_datetime(&today_9am);
     assert_eq!(new_due, expected);
 
     // Today's chore unchanged

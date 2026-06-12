@@ -85,6 +85,14 @@ async fn main() {
         cfg.log_level
     );
 
+    // Ensure the database directory exists (the default XDG path
+    // may not have been created yet).
+    if let Some(parent) = std::path::Path::new(&cfg.db).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).expect("Failed to create database directory");
+        }
+    }
+
     let db = Arc::new(
         db::Db::open(&cfg.db).expect("Failed to open database"),
     );

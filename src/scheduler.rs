@@ -39,10 +39,10 @@ pub async fn run(db: Arc<Db>, bot: Bot) {
         if local_now.hour() >= DAILY_DIGEST_HOUR && last_digest_date != Some(today) {
             last_digest_date = Some(today);
 
-            // Roll over any overdue undone chores to tomorrow
+            // Roll over any overdue undone chores to today
             match db.rollover_overdue_chores() {
                 Ok(0) => {}
-                Ok(n) => info!("Rolled over {n} overdue chore(s) to tomorrow"),
+                Ok(n) => info!("Rolled over {n} overdue chore(s) to today"),
                 Err(e) => error!("Failed to roll over overdue chores: {e}"),
             }
 

@@ -455,13 +455,14 @@ impl Db {
         Ok(updated > 0)
     }
 
-    /// Roll over all overdue undone chores to tomorrow at 09:00 UTC.
+    /// Roll over all overdue undone chores to today at 09:00 UTC.
     /// "Overdue" means `due_at < start of today`. Returns the count of
     /// chores bumped.
     pub fn rollover_overdue_chores(&self) -> rusqlite::Result<usize> {
-        let tomorrow_9am = (Utc::now().date_naive() + chrono::Duration::days(1))
+        let today_9am = Utc::now()
+            .date_naive()
             .and_time(chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap());
-        let tomorrow = Utc.from_utc_datetime(&tomorrow_9am);
+        let today_9am_utc = Utc.from_utc_datetime(&today_9am);
         let today_start = Utc.from_utc_datetime(
             &Utc::now()
                 .date_naive()
@@ -471,7 +472,7 @@ impl Db {
         let updated = conn.execute(
             "UPDATE chores SET due_at = ?1
              WHERE done = 0 AND due_at IS NOT NULL AND due_at < ?2",
-            params![tomorrow.to_rfc3339(), today_start.to_rfc3339()],
+            params![today_9am_utc.to_rfc3339(), today_start.to_rfc3339()],
         )?;
         Ok(updated)
     }

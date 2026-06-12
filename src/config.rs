@@ -55,15 +55,22 @@ impl Config {
         cli_log_level: Option<&str>,
         cli_templates: Option<&str>,
     ) -> Self {
-        // 1. Load config file
-        let file_cfg = load_config_file(config_path);
+        // 1. Load config file (+ the directory it lives in, for resolving
+        //    relative paths like `db = "bonjourdijon.db"`).
+        let (file_cfg, config_dir) = load_config_file(config_path);
 
         // 2. Layer: CLI > env > file > default
-        let db = cli_db
+        //    Default DB lives in XDG config dir so it works even when
+        //    CWD is somewhere else (e.g. MCP server spawned by pool).
+        let db_raw = cli_db
             .map(|s| s.to_string())
             .or_else(|| std::env::var("BONJOURDIJON_DB").ok())
             .or(file_cfg.db)
-            .unwrap_or_else(|| "bonjourdijon.db".to_string());
+            .unwrap_or_else(|| default_db_path());
+
+        // Resolve relative DB path against the config file's directory
+        // so `db = "bonjourdijon.db"` in a config works from any CWD.
+        let db = resolve_relative(&db_raw, config_dir.as_deref());
 
         let port = cli_port
             .or_else(|| {
@@ -81,11 +88,13 @@ impl Config {
             .or(file_cfg.log_level)
             .unwrap_or_else(|| "info".to_string());
 
-        let templates = cli_templates
+        let templates_raw = cli_templates
             .map(|s| s.to_string())
             .or_else(|| std::env::var("BONJOURDIJON_TEMPLATES").ok())
             .or(file_cfg.templates)
             .unwrap_or_else(|| "templates/**/*.html".to_string());
+
+        let templates = resolve_relative(&templates_raw, config_dir.as_deref());
 
         let telegram_token = std::env::var("TELOXIDE_TOKEN")
             .ok()
@@ -127,12 +136,43 @@ impl Config {
     }
 }
 
+/// Default database path: `~/.config/bonjourdijon/bonjourdijon.db`.
+/// Falls back to `bonjourdijon.db` (CWD) if HOME isn't set.
+fn default_db_path() -> String {
+    if let Some(home) = dirs_fallback() {
+        home.join(".config")
+            .join("bonjourdijon")
+            .join("bonjourdijon.db")
+            .to_string_lossy()
+            .to_string()
+    } else {
+        "bonjourdijon.db".to_string()
+    }
+}
+
+/// If `path` is relative and we know where the config file lives,
+/// resolve it against the config directory.  Absolute paths and
+/// paths with glob wildcards are returned as-is.
+fn resolve_relative(path: &str, config_dir: Option<&std::path::Path>) -> String {
+    let p = PathBuf::from(path);
+    if p.is_absolute() || path.contains('*') {
+        return path.to_string();
+    }
+    if let Some(dir) = config_dir {
+        dir.join(&p).to_string_lossy().to_string()
+    } else {
+        path.to_string()
+    }
+}
+
 /// Try to load a config file. Search order:
 /// 1. Explicit path (--config)
 /// 2. ./bonjourdijon.toml
 /// 3. ~/.config/bonjourdijon/config.toml
-/// Returns default if none found.
-fn load_config_file(explicit_path: Option<&str>) -> FileConfig {
+///
+/// Returns `(config, config_dir)` — `config_dir` is the parent directory
+/// of the file that was loaded (used for resolving relative paths).
+fn load_config_file(explicit_path: Option<&str>) -> (FileConfig, Option<PathBuf>) {
     let candidates: Vec<PathBuf> = if let Some(p) = explicit_path {
         vec![PathBuf::from(p)]
     } else {
@@ -149,7 +189,13 @@ fn load_config_file(explicit_path: Option<&str>) -> FileConfig {
                 Ok(contents) => match toml::from_str::<FileConfig>(&contents) {
                     Ok(cfg) => {
                         eprintln!("📄 Loaded config from {}", path.display());
-                        return cfg;
+                        // Canonicalize so relative `./bonjourdijon.toml`
+                        // resolves to an absolute directory.
+                        let dir = path
+                            .canonicalize()
+                            .ok()
+                            .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                        return (cfg, dir);
                     }
                     Err(e) => {
                         eprintln!("⚠️  Failed to parse {}: {e}", path.display());
@@ -162,7 +208,7 @@ fn load_config_file(explicit_path: Option<&str>) -> FileConfig {
         }
     }
 
-    FileConfig::default()
+    (FileConfig::default(), None)
 }
 
 /// Simple home dir fallback without adding a dep.
