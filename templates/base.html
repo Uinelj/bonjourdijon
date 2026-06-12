@@ -18,22 +18,20 @@
     </script>
 </head>
 <body>
-    <div class="shell">
-        <aside class="sidebar">
-            <a href="/" class="logo">bonjourdijon</a>
-            <nav>
+    <div class="frame">
+        <nav>
+            <a href="/" class="logo"><span class="dot">●</span> bjd</a>
+            <div class="nav-links">
                 <a href="/">/home</a>
                 <a href="/chores">/chores</a>
                 <a href="/groceries">/groceries</a>
                 <a href="/groceries/map">/map</a>
                 <a href="/lists">/lists</a>
                 <a href="/calendar">/cal</a>
-                <a href="/settings">/settings</a>
-            </nav>
-            <div class="sidebar-footer">
-                <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">◐</button>
+                <a href="/settings">/cfg</a>
             </div>
-        </aside>
+            <button class="theme-toggle" onclick="toggleTheme()" title="toggle theme">◐</button>
+        </nav>
         <main>
             {% block content %}{% endblock %}
         </main>
