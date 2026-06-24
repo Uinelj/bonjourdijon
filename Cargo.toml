@@ -8,7 +8,7 @@ repository = "https://gitdot.io/uj/bonjourdijon"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-teloxide = { version = "0.17", features = ["macros"] }
+teloxide = { version = "0.17", default-features = false, features = ["macros", "ctrlc_handler", "rustls"] }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["fs"] }
 rusqlite = { version = "0.34", features = ["bundled"] }
