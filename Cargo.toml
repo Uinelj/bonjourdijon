@@ -1,6 +1,6 @@
 [package]
 name = "bonjourdijon"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "A Telegram bot and web dashboard for household chores, groceries, reminders, and calendar events."
 license = "MIT"
