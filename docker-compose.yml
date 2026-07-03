@@ -1,6 +1,9 @@
 services:
   bonjourdijon:
     build: .
+    # To use the pre-built image from GitHub Container Registry instead, comment out
+    # the `build: .` line and uncomment the line below (replace OWNER with your GitHub org/username):
+    # image: ghcr.io/OWNER/bonjourdijon:v1.0.0
     ports:
       - "3000:3000"
     volumes:

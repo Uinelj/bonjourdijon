@@ -49,18 +49,28 @@ The MCP protocol is also available over HTTP at `POST /mcp` when the web server 
 The easiest way to run BonjourDijon. The single container serves both the web UI and the MCP endpoint (`POST /mcp`).
 
 ```bash
-# 1. Clone & configure
+# 1. Clone & configure (or use the pre-built image directly)
 git clone https://github.com/your-user/bonjourdijon.git
 cd bonjourdijon
 
 # 2. Set your secrets in docker-compose.yml (or pass them via .env)
 #    At minimum, uncomment TELOXIDE_TOKEN if you want the Telegram bot.
+#    To use the pre-built image from GitHub Container Registry, comment out
+#    `build: .` and uncomment the `image:` line.
 
 # 3. Start
 docker compose up -d
 ```
 
 The web UI is at **http://localhost:3000** and the MCP endpoint is at **http://localhost:3000/mcp**.
+
+Using the pre-built image:
+
+```bash
+# Pull a specific version from GitHub Container Registry (replace OWNER with your GitHub org/username)
+docker pull ghcr.io/OWNER/bonjourdijon:v1.0.0
+# Or edit docker-compose.yml to use the image instead of building from source
+```
 
 To pass secrets via a `.env` file instead of editing `docker-compose.yml`:
 
